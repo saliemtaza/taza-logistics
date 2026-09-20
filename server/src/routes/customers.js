@@ -7,11 +7,65 @@ import { geocodeMissingCustomers, regeocodeCustomer } from '../services/geocode.
 const upload = multer({ storage: multer.memoryStorage() });
 export const customersRouter = Router();
 
+// Looks up a value on a CSV row by trying a list of possible header names,
+// case-insensitively and ignoring surrounding spaces — so "Display Name",
+// "display_name", "  Name  " etc. all resolve the same way. Returns the
+// first non-empty match, or undefined if none of the aliases are present.
+function getField(row, aliases) {
+  const normalizedRow = {};
+  for (const key of Object.keys(row)) {
+    normalizedRow[key.trim().toLowerCase()] = row[key];
+  }
+  for (const alias of aliases) {
+    const value = normalizedRow[alias.toLowerCase()];
+    if (value !== undefined && value !== '') return value;
+  }
+  return undefined;
+}
+
+// Some exports (e.g. Zoho Books/Invoice) split the address across several
+// billing columns instead of one combined field. Prefer a single address
+// column if present, otherwise stitch the billing columns together.
+function getAddress(row) {
+  const direct = getField(row, ['address', 'delivery address', 'address 1']);
+  if (direct) return direct;
+
+  const parts = [
+    getField(row, ['billing address']),
+    getField(row, ['billing street2']),
+    getField(row, ['billing city']),
+    getField(row, ['billing state']),
+    getField(row, ['billing code']),
+    getField(row, ['billing country']),
+  ].filter(Boolean);
+  return parts.length ? parts.join(', ') : undefined;
+}
+
+// Some exports already include coordinates (e.g. Zoho's "Billing
+// Latitude"/"Billing Longitude"). When present and valid, use them
+// directly instead of spending a Google geocode call on that row.
+function getLatLng(row) {
+  const latRaw = getField(row, ['billing latitude', 'latitude', 'lat']);
+  const lngRaw = getField(row, ['billing longitude', 'longitude', 'lng']);
+  const lat = latRaw !== undefined ? Number(latRaw) : NaN;
+  const lng = lngRaw !== undefined ? Number(lngRaw) : NaN;
+  if (Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0)) {
+    return { lat, lng };
+  }
+  return { lat: null, lng: null };
+}
+
 customersRouter.get('/', async (req, res) => {
   res.json(await query('SELECT * FROM customers WHERE active = true ORDER BY name'));
 });
 
-// Expected CSV columns (case-insensitive): code, name, address
+// Expected CSV columns (case-insensitive): code, name, address — also
+// accepts common accounting-system export aliases (e.g. "Display Name",
+// "Billing Address", Zoho's "Contact ID" as code). If the file splits the
+// address across several billing columns (address/street2/city/state/
+// code/country) they're stitched into one address string. If the file
+// already includes coordinates (e.g. "Billing Latitude"/"Billing
+// Longitude"), those are used directly instead of geocoding that row.
 // Existing customers are matched by code (if present) or by name, and updated
 // in place — re-uploading the same file is safe and never duplicates rows,
 // and never re-geocodes an address that hasn't changed.
@@ -39,31 +93,52 @@ customersRouter.post('/upload', upload.single('file'), async (req, res) => {
 
   await withTransaction(async (client) => {
     for (const row of records) {
-      const code = row.code || row.Code || null;
-      const name = row.name || row.Name;
-      const address = row.address || row.Address;
+      const code = getField(row, ['code', 'contact id', 'account number', 'customer code', 'customer number']) || null;
+      const name = getField(row, ['name', 'display name', 'customer name', 'company name']);
+      const address = getAddress(row);
       if (!name || !address) { skipped += 1; continue; }
+      const { lat, lng } = getLatLng(row);
+      const hasCoords = lat !== null && lng !== null;
 
       const existingResult = code
-        ? await client.query('SELECT id FROM customers WHERE code = $1', [code])
-        : await client.query('SELECT id FROM customers WHERE name = $1', [name]);
+        ? await client.query('SELECT id, address, lat, lng FROM customers WHERE code = $1', [code])
+        : await client.query('SELECT id, address, lat, lng FROM customers WHERE name = $1', [name]);
       const existing = existingResult.rows[0];
 
       if (existing) {
-        // Only clear cached coordinates if the address actually changed —
-        // avoids needlessly re-geocoding (and re-billing) unchanged rows.
-        const updateResult = await client.query(
-          `UPDATE customers SET address = $1, lat = NULL, lng = NULL, geocoded_at = NULL
-           WHERE id = $2 AND address != $1`,
-          [address, existing.id]
-        );
-        if (updateResult.rowCount === 0) skipped += 1; else updated += 1;
+        const addressChanged = existing.address !== address;
+        const missingCoords = existing.lat === null || existing.lat === undefined
+          || existing.lng === null || existing.lng === undefined;
+
+        if (addressChanged || (hasCoords && missingCoords)) {
+          if (hasCoords) {
+            // File already supplies coordinates — use them directly and
+            // skip the paid Google geocode call entirely.
+            await client.query(
+              `UPDATE customers SET address = $1, lat = $2, lng = $3, geocoded_at = $4
+               WHERE id = $5`,
+              [address, lat, lng, new Date().toISOString(), existing.id]
+            );
+          } else {
+            // No coordinates in the file — clear cached ones so the
+            // background geocoder picks this customer up.
+            await client.query(
+              `UPDATE customers SET address = $1, lat = NULL, lng = NULL, geocoded_at = NULL
+               WHERE id = $2`,
+              [address, existing.id]
+            );
+          }
+          updated += 1;
+        } else {
+          skipped += 1;
+        }
         await client.query('UPDATE customers SET active = true WHERE id = $1', [existing.id]);
         seenIds.push(existing.id);
       } else {
         const insertResult = await client.query(
-          'INSERT INTO customers (code, name, address) VALUES ($1, $2, $3) RETURNING id',
-          [code, name, address]
+          `INSERT INTO customers (code, name, address, lat, lng, geocoded_at)
+           VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+          [code, name, address, lat, lng, hasCoords ? new Date().toISOString() : null]
         );
         inserted += 1;
         seenIds.push(insertResult.rows[0].id);

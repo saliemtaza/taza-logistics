@@ -22,6 +22,12 @@ ordersRouter.get('/', async (req, res) => {
 // Body: { date: 'YYYY-MM-DD', orders: [{ customer_id, value_rand }] }
 // Replaces the day's order list wholesale — simplest safe behaviour for a
 // daily planning workflow (avoids duplicate/partial entries on re-upload).
+// Overwrites anything not yet actually delivered (matches the status
+// convention planning.js already uses) — NOT just 'pending' rows, because
+// once a route plan has been generated for the date, those same orders
+// flip to 'planned', and a 'pending'-only filter would silently miss them
+// on a re-save/re-upload and insert duplicates alongside them instead of
+// replacing them.
 ordersRouter.post('/', async (req, res) => {
   const { date, orders } = req.body;
   if (!date || !Array.isArray(orders)) {
@@ -29,7 +35,7 @@ ordersRouter.post('/', async (req, res) => {
   }
 
   await withTransaction(async (client) => {
-    await client.query("DELETE FROM orders WHERE order_date = $1 AND status = 'pending'", [date]);
+    await client.query("DELETE FROM orders WHERE order_date = $1 AND status != 'delivered'", [date]);
     for (const o of orders) {
       await client.query('INSERT INTO orders (customer_id, order_date, value_rand) VALUES ($1, $2, $3)', [o.customer_id, date, o.value_rand]);
     }
@@ -58,16 +64,17 @@ ordersRouter.post('/upload', upload.single('file'), async (req, res) => {
   const notFound = [];
 
   await withTransaction(async (client) => {
-    await client.query("DELETE FROM orders WHERE order_date = $1 AND status = 'pending'", [date]);
+    await client.query("DELETE FROM orders WHERE order_date = $1 AND status != 'delivered'", [date]);
     for (const row of records) {
       const code = row.code || row.Code || null;
-      const name = row.name || row.Name;
-      const value = parseFloat(row.value_rand || row.value || row.Value);
+      const name = row.name || row.Name || row['Customer Name'];
+      const rawValue = row.value_rand ?? row.value ?? row.Value ?? row.Balance;
+      const value = parseFloat(String(rawValue ?? '').replace(/[R,\s"]/g, ''));
       if (!value) continue;
 
       const customerResult = code
         ? await client.query('SELECT id FROM customers WHERE code = $1', [code])
-        : await client.query('SELECT id FROM customers WHERE name = $1', [name]);
+        : await client.query('SELECT id FROM customers WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))', [name]);
       const customer = customerResult.rows[0];
       if (!customer) { notFound.push(code || name); continue; }
 

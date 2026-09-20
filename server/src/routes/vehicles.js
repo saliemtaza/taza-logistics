@@ -8,16 +8,31 @@ vehiclesRouter.get('/', async (req, res) => {
 });
 
 vehiclesRouter.put('/:id', async (req, res) => {
-  const { name, payload_limit_rand, fuel_consumption_l_per_100km, avg_speed_kmh, active } = req.body;
+  const {
+    name, vehicle_type, fuel_type, payload_limit_rand,
+    crew_driver, crew_helpers, fuel_consumption_l_per_100km,
+    avg_speed_kmh, active, max_stops_per_day, maintenance_cost_per_km,
+  } = req.body;
   await query(
     `UPDATE vehicles SET
       name = COALESCE($1, name),
-      payload_limit_rand = $2,
-      fuel_consumption_l_per_100km = COALESCE($3, fuel_consumption_l_per_100km),
-      avg_speed_kmh = COALESCE($4, avg_speed_kmh),
-      active = COALESCE($5, active)
-    WHERE id = $6`,
-    [name ?? null, payload_limit_rand ?? null, fuel_consumption_l_per_100km ?? null, avg_speed_kmh ?? null, active ?? null, req.params.id]
+      vehicle_type = COALESCE($2, vehicle_type),
+      fuel_type = COALESCE($3, fuel_type),
+      payload_limit_rand = $4,
+      crew_driver = COALESCE($5, crew_driver),
+      crew_helpers = COALESCE($6, crew_helpers),
+      fuel_consumption_l_per_100km = COALESCE($7, fuel_consumption_l_per_100km),
+      avg_speed_kmh = COALESCE($8, avg_speed_kmh),
+      active = COALESCE($9, active),
+      max_stops_per_day = $10,
+      maintenance_cost_per_km = COALESCE($11, maintenance_cost_per_km)
+    WHERE id = $12`,
+    [
+      name ?? null, vehicle_type ?? null, fuel_type ?? null,
+      payload_limit_rand ?? null, crew_driver ?? null, crew_helpers ?? null,
+      fuel_consumption_l_per_100km ?? null, avg_speed_kmh ?? null, active ?? null,
+      max_stops_per_day ?? null, maintenance_cost_per_km ?? null, req.params.id,
+    ]
   );
   res.json(await queryOne('SELECT * FROM vehicles WHERE id = $1', [req.params.id]));
 });
@@ -32,6 +47,7 @@ vehiclesRouter.post('/', async (req, res) => {
     name, vehicle_type, fuel_type, payload_limit_rand,
     crew_driver = 1, crew_helpers = 1,
     fuel_consumption_l_per_100km, avg_speed_kmh = 35,
+    max_stops_per_day, maintenance_cost_per_km = 0,
   } = req.body;
 
   if (!name || !vehicle_type || !fuel_type || !fuel_consumption_l_per_100km) {
@@ -39,9 +55,9 @@ vehiclesRouter.post('/', async (req, res) => {
   }
 
   const created = await queryOne(
-    `INSERT INTO vehicles (name, vehicle_type, fuel_type, payload_limit_rand, crew_driver, crew_helpers, fuel_consumption_l_per_100km, avg_speed_kmh)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-    [name, vehicle_type, fuel_type, payload_limit_rand ?? null, crew_driver, crew_helpers, fuel_consumption_l_per_100km, avg_speed_kmh]
+    `INSERT INTO vehicles (name, vehicle_type, fuel_type, payload_limit_rand, crew_driver, crew_helpers, fuel_consumption_l_per_100km, avg_speed_kmh, max_stops_per_day, maintenance_cost_per_km)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+    [name, vehicle_type, fuel_type, payload_limit_rand ?? null, crew_driver, crew_helpers, fuel_consumption_l_per_100km, avg_speed_kmh, max_stops_per_day ?? null, maintenance_cost_per_km]
   );
 
   res.json(created);

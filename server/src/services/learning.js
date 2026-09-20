@@ -92,6 +92,24 @@ export async function learnFromFuelLog(fuelLogId) {
   await query('UPDATE vehicles SET fuel_consumption_l_per_100km = $1 WHERE id = $2', [clamp(updated, 3, 60), log.vehicle_id]);
 }
 
+/**
+ * Call this once both Start Load and End Load are punched for a trip.
+ * Rolls the observed warehouse loading duration into that vehicle's
+ * learned average — same rolling-average approach as speed and fuel
+ * consumption above.
+ */
+export async function learnFromLoadingTime(tripId) {
+  const trip = await queryOne('SELECT * FROM trips WHERE id = $1', [tripId]);
+  if (!trip || !trip.load_started_at || !trip.load_ended_at) return;
+
+  const observedMinutes = minutesBetween(trip.load_started_at, trip.load_ended_at);
+  if (observedMinutes <= 0 || observedMinutes > 240) return; // sanity guard against a missed/garbled punch
+
+  const vehicle = await queryOne('SELECT avg_loading_minutes FROM vehicles WHERE id = $1', [trip.vehicle_id]);
+  const updated = rollingAverage(vehicle.avg_loading_minutes, observedMinutes);
+  await query('UPDATE vehicles SET avg_loading_minutes = $1 WHERE id = $2', [clamp(updated, 5, 120), trip.vehicle_id]);
+}
+
 function minutesBetween(isoA, isoB) {
   return (new Date(isoB) - new Date(isoA)) / 60000;
 }

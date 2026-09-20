@@ -27,7 +27,11 @@ collectionsRouter.post('/', async (req, res) => {
   }
 
   await withTransaction(async (client) => {
-    await client.query("DELETE FROM collections WHERE collection_date = $1 AND status = 'pending'", [date]);
+    // Clear everything not yet actually collected — a 'planned' row (one
+    // already included in a generated route) must be replaced too, or it
+    // survives alongside the newly-saved list and gets double-counted the
+    // next time a route is generated.
+    await client.query("DELETE FROM collections WHERE collection_date = $1 AND status != 'collected'", [date]);
     for (const c of collections) {
       await client.query('INSERT INTO collections (customer_id, collection_date, amount_due_rand) VALUES ($1, $2, $3)', [c.customer_id, date, c.amount_due_rand]);
     }
@@ -55,7 +59,7 @@ collectionsRouter.post('/upload', upload.single('file'), async (req, res) => {
   const notFound = [];
 
   await withTransaction(async (client) => {
-    await client.query("DELETE FROM collections WHERE collection_date = $1 AND status = 'pending'", [date]);
+    await client.query("DELETE FROM collections WHERE collection_date = $1 AND status != 'collected'", [date]);
     for (const row of records) {
       const code = row.code || row.Code || null;
       const name = row.name || row.Name;

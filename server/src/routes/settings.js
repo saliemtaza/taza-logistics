@@ -18,7 +18,9 @@ settingsRouter.get('/', async (req, res) => {
   res.json({ settings, fuelPrices });
 });
 
-// Body: any subset of { open_time, close_time, warehouse_load_minutes, warehouse_address }
+// Body: any subset of { open_time, close_time, warehouse_address }
+// (warehouse_load_minutes has been retired — loading time is now learned
+// per-vehicle from real Start/End Load punches, see services/learning.js)
 settingsRouter.put('/', async (req, res) => {
   const addressChanged = req.body.warehouse_address !== undefined;
 

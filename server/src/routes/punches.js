@@ -1,6 +1,7 @@
 import { Router } from 'express';
-import { query } from '../db/index.js';
+import { query, queryOne } from '../db/index.js';
 import { learnFromCompletedTrip } from '../services/learning.js';
+import { generateDailyReport } from '../services/reports.js';
 
 export const punchesRouter = Router();
 
@@ -49,6 +50,12 @@ punchesRouter.post('/back-at-warehouse', async (req, res) => {
 
   // Feed today's actuals back into the learning model immediately.
   await learnFromCompletedTrip(trip_id);
+
+  // Rebuild today's report so it reflects this trip's real numbers —
+  // cheap (recomputes from this date's trips only) and safe to re-run as
+  // more trips complete through the day.
+  const trip = await queryOne('SELECT trip_date FROM trips WHERE id = $1', [trip_id]);
+  if (trip) await generateDailyReport(trip.trip_date);
 
   res.json({ ok: true });
 });
