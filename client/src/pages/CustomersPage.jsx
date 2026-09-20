@@ -6,6 +6,8 @@ export default function CustomersPage() {
   const [uploadResult, setUploadResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [fullSync, setFullSync] = useState(true);
+  const [geocoding, setGeocoding] = useState(false);
+  const [geocodeProgress, setGeocodeProgress] = useState(null); // { done, total }
 
   async function load() {
     setCustomers(await api.get('/api/customers'));
@@ -38,6 +40,31 @@ export default function CustomersPage() {
     }
   }
 
+  // Repeatedly calls the batch endpoint (up to 40 customers per call) until
+  // nothing's left pending — avoids the operator clicking Retry hundreds
+  // of times after a large upload with many not-yet-geocoded addresses.
+  async function geocodeAllPending() {
+    setGeocoding(true);
+    const total = missing.length;
+    let done = 0;
+    setGeocodeProgress({ done, total });
+    try {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const result = await api.post('/api/customers/geocode-batch', {});
+        done += (result.succeeded || 0) + (result.failed?.length || 0);
+        setGeocodeProgress({ done: Math.min(done, total), total });
+        if (!result.stillPending) break;
+      }
+      await load();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setGeocoding(false);
+      setGeocodeProgress(null);
+    }
+  }
+
   const missing = customers.filter((c) => c.lat == null);
 
   return (
@@ -67,6 +94,12 @@ export default function CustomersPage() {
       {missing.length > 0 && (
         <section className="card">
           <h3>Needs attention: {missing.length} customer(s) not geocoded</h3>
+          <button onClick={geocodeAllPending} disabled={geocoding}>
+            {geocoding ? 'Geocoding...' : `Geocode all ${missing.length} pending`}
+          </button>
+          {geocodeProgress && (
+            <p className="hint">{geocodeProgress.done} of {geocodeProgress.total} processed...</p>
+          )}
           <table>
             <thead><tr><th>Name</th><th>Address</th><th></th></tr></thead>
             <tbody>

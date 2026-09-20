@@ -8,7 +8,7 @@ export default function SettingsPage() {
   const [warehouseAddress, setWarehouseAddress] = useState('');
   const [openTime, setOpenTime] = useState('08:00');
   const [closeTime, setCloseTime] = useState('16:30');
-  const [loadMinutes, setLoadMinutes] = useState('20');
+  const [safetyMarginPct, setSafetyMarginPct] = useState('20');
   const [newFuelType, setNewFuelType] = useState('diesel');
   const [newFuelPrice, setNewFuelPrice] = useState('');
   const [message, setMessage] = useState('');
@@ -20,7 +20,7 @@ export default function SettingsPage() {
     setWarehouseAddress(data.settings.warehouse_address || '');
     setOpenTime(data.settings.open_time || '08:00');
     setCloseTime(data.settings.close_time || '16:30');
-    setLoadMinutes(data.settings.warehouse_load_minutes || '20');
+    setSafetyMarginPct(data.settings.time_safety_margin_pct || '20');
   }
   useEffect(() => { load(); }, []);
 
@@ -32,7 +32,7 @@ export default function SettingsPage() {
         warehouse_address: warehouseAddress,
         open_time: openTime,
         close_time: closeTime,
-        warehouse_load_minutes: loadMinutes,
+        time_safety_margin_pct: safetyMarginPct,
       });
       setMessage(res.warning || 'Saved.');
       load();
@@ -74,10 +74,15 @@ export default function SettingsPage() {
             <label>Close time
               <input type="time" value={closeTime} onChange={(e) => setCloseTime(e.target.value)} />
             </label>
-            <label>Loading time at warehouse (min)
-              <input type="number" value={loadMinutes} onChange={(e) => setLoadMinutes(e.target.value)} />
+            <label>Route time safety margin (%)
+              <input type="number" value={safetyMarginPct} onChange={(e) => setSafetyMarginPct(e.target.value)} />
             </label>
           </div>
+          <p className="hint">
+            Inflates each route's estimated time before checking it against close time — a buffer against
+            real-world traffic/dwell delays the learned averages haven't caught yet. Lower this as real
+            trip data makes the estimates more trustworthy.
+          </p>
           <button type="submit">Save</button>
         </form>
         {settings.warehouse_lat && <p className="hint">Geocoded: {settings.warehouse_lat}, {settings.warehouse_lng}</p>}
@@ -89,7 +94,7 @@ export default function SettingsPage() {
           <thead><tr><th>Fuel</th><th>Price/L</th><th>Effective</th></tr></thead>
           <tbody>
             {fuelPrices.map((f) => (
-              <tr key={f.fuel_type}><td>{f.fuel_type}</td><td>R{f.price_per_litre.toFixed(2)}</td><td>{f.effective_date}</td></tr>
+              <tr key={f.fuel_type}><td>{f.fuel_type}</td><td>R{Number(f.price_per_litre).toFixed(2)}</td><td>{f.effective_date}</td></tr>
             ))}
           </tbody>
         </table>

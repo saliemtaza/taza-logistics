@@ -1,7 +1,7 @@
 const BASE_URL_KEY = 'taza_api_base_url';
 
 export function getApiBase() {
-  return localStorage.getItem(BASE_URL_KEY) || `http://${window.location.hostname}:4000`;
+  return localStorage.getItem(BASE_URL_KEY) || import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:4000`;
 }
 
 export function setApiBase(url) {

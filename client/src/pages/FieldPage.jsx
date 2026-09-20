@@ -7,6 +7,28 @@ const QUEUE_KEY = 'taza_field_punch_queue';
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
+
+// Google's consumer maps link only reliably takes about 9 waypoints plus a
+// destination before it complains, so a long route (the 13-stop Isuzu days)
+// gets split into consecutive legs instead of one link. Origin is left out
+// deliberately — omitting it makes Google Maps use the driver's actual
+// current location, which is more accurate than a fixed warehouse address
+// and needs no extra data on this page.
+const MAX_STOPS_PER_MAPS_LINK = 10;
+
+function buildMapsLinks(stops) {
+  const addresses = stops.map((s) => s.address).filter(Boolean);
+  const links = [];
+  for (let i = 0; i < addresses.length; i += MAX_STOPS_PER_MAPS_LINK) {
+    const chunk = addresses.slice(i, i + MAX_STOPS_PER_MAPS_LINK);
+    const destination = chunk[chunk.length - 1];
+    const waypoints = chunk.slice(0, -1);
+    const params = new URLSearchParams({ api: '1', destination, travelmode: 'driving' });
+    if (waypoints.length > 0) params.set('waypoints', waypoints.join('|'));
+    links.push(`https://www.google.com/maps/dir/?${params.toString()}`);
+  }
+  return links;
+}
 function loadQueue() {
   return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]');
 }
@@ -122,12 +144,30 @@ export default function FieldPage() {
           <h3>Trip #{trip.id}</h3>
 
           {!trip.left_warehouse_at ? (
-            <button className="big" onClick={() => punch('/api/punches/left-warehouse', { trip_id: trip.id }, (ts) => { trip.left_warehouse_at = ts; setTrips([...trips]); })}>
+            <button
+              className="big"
+              onClick={() => {
+                // Open synchronously, in the same click, so the browser
+                // doesn't treat it as a blocked pop-up — punch() below is
+                // async and firing the map open after an await would risk
+                // that.
+                const links = buildMapsLinks(trip.stops);
+                if (links[0]) window.open(links[0], '_blank', 'noopener');
+                punch('/api/punches/left-warehouse', { trip_id: trip.id }, (ts) => { trip.left_warehouse_at = ts; setTrips([...trips]); });
+              }}
+            >
               Left Warehouse
             </button>
           ) : (
             <>
               <p className="hint">Left warehouse: {new Date(trip.left_warehouse_at).toLocaleTimeString()}</p>
+              <div className="row" style={{ gap: '0.5em', marginBottom: '1em' }}>
+                {buildMapsLinks(trip.stops).map((link, i, arr) => (
+                  <a key={link} href={link} target="_blank" rel="noopener noreferrer">
+                    <button type="button">{arr.length > 1 ? `Open route in Maps (stops ${i * MAX_STOPS_PER_MAPS_LINK + 1}-${Math.min((i + 1) * MAX_STOPS_PER_MAPS_LINK, trip.stops.length)})` : 'Open route in Maps'}</button>
+                  </a>
+                ))}
+              </div>
               <ol>
                 {trip.stops.map((stop) => (
                   <li key={stop.id} style={{ marginBottom: '1em' }}>
