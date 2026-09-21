@@ -6,8 +6,12 @@ import { query, queryOne } from '../db/index.js';
 // since it always recomputes from scratch rather than incrementing.
 export async function generateDailyReport(date) {
   const trips = await query(`
-    SELECT t.*, v.name AS vehicle_name
-    FROM trips t JOIN vehicles v ON v.id = t.vehicle_id
+    SELECT t.*, v.name AS vehicle_name,
+      d.name AS driver_name, c.name AS cash_collector_name
+    FROM trips t
+    JOIN vehicles v ON v.id = t.vehicle_id
+    LEFT JOIN staff d ON d.id = t.driver_id
+    LEFT JOIN staff c ON c.id = t.cash_collected_by
     WHERE t.trip_date = $1
   `, [date]);
 
@@ -15,6 +19,9 @@ export async function generateDailyReport(date) {
 
   const stopsByTrip = await Promise.all(trips.map((t) =>
     query('SELECT * FROM trip_stops WHERE trip_id = $1', [t.id])
+  ));
+  const crewByTrip = await Promise.all(trips.map((t) =>
+    query('SELECT s.name FROM trip_crew tc JOIN staff s ON s.id = tc.staff_id WHERE tc.trip_id = $1', [t.id])
   ));
 
   let totalStops = 0, totalKm = 0, totalDeliveryValue = 0, totalCollectionValue = 0;
@@ -44,6 +51,9 @@ export async function generateDailyReport(date) {
 
     vehicleSummaries.push({
       vehicle_name: trip.vehicle_name,
+      driver_name: trip.driver_name || null,
+      cash_collector_name: trip.cash_collector_name || null,
+      crew_names: crewByTrip[i].map((c) => c.name),
       stops: stops.length,
       distance_km: trip.planned_distance_km,
       planned_minutes: trip.planned_duration_min,
