@@ -13,6 +13,7 @@ import { settingsRouter } from './routes/settings.js';
 import { fuelLogsRouter } from './routes/fuelLogs.js';
 import { archiveRouter } from './routes/archive.js';
 import { staffRouter } from './routes/staff.js';
+import { reportsRouter } from './routes/reports.js';
 
 const app = express();
 app.use(cors());
@@ -29,6 +30,7 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/fuel-logs', fuelLogsRouter);
 app.use('/api/archive', archiveRouter);
 app.use('/api/staff', staffRouter);
+app.use('/api/reports', reportsRouter);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
