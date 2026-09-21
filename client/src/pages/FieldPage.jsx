@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { api } from '../lib/api.js';
 
 const TRIP_CACHE_KEY = 'taza_field_trip_cache';
+const STAFF_CACHE_KEY = 'taza_field_staff_cache';
 const QUEUE_KEY = 'taza_field_punch_queue';
 
 function todayStr() {
@@ -43,6 +44,13 @@ export default function FieldPage() {
   const [queueSize, setQueueSize] = useState(loadQueue().length);
   const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState('');
+  const [staff, setStaff] = useState(() => JSON.parse(localStorage.getItem(STAFF_CACHE_KEY) || 'null') || []);
+  // Day picker selections — one driver, one collector (both required before
+  // Left Warehouse can fire), and any number of crew. Reset whenever a
+  // different trip is selected.
+  const [driverId, setDriverId] = useState('');
+  const [collectorId, setCollectorId] = useState('');
+  const [crewIds, setCrewIds] = useState([]);
 
   const flushQueue = useCallback(async () => {
     let queue = loadQueue();
@@ -73,13 +81,22 @@ export default function FieldPage() {
 
   async function syncTodaysPlan() {
     try {
-      const data = await api.get(`/api/planning/${date}`);
+      const [data, staffList] = await Promise.all([
+        api.get(`/api/planning/${date}`),
+        api.get('/api/staff'),
+      ]);
       localStorage.setItem(TRIP_CACHE_KEY, JSON.stringify(data));
+      localStorage.setItem(STAFF_CACHE_KEY, JSON.stringify(staffList));
       setTrips(data);
+      setStaff(staffList);
       setMessage('Today’s plan is cached — this device can now work offline.');
     } catch (err) {
       setMessage(`Could not fetch plan (are you online and connected to the server?): ${err.message}`);
     }
+  }
+
+  function toggleCrew(id) {
+    setCrewIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
   // Every punch: apply optimistically to local state (so the UI feels
@@ -129,7 +146,7 @@ export default function FieldPage() {
           <ul className="plain">
             {trips.map((t) => (
               <li key={t.id}>
-                <button onClick={() => setSelectedTripId(t.id)}>
+                <button onClick={() => { setSelectedTripId(t.id); setDriverId(''); setCollectorId(''); setCrewIds([]); }}>
                   Trip #{t.id} — {t.stops.length} stops — {t.status}
                 </button>
               </li>
@@ -140,24 +157,56 @@ export default function FieldPage() {
 
       {trip && (
         <section className="card">
-          <button onClick={() => setSelectedTripId(null)}>← back to trips</button>
+          <button onClick={() => { setSelectedTripId(null); setDriverId(''); setCollectorId(''); setCrewIds([]); }}>← back to trips</button>
           <h3>Trip #{trip.id}</h3>
 
           {!trip.left_warehouse_at ? (
-            <button
-              className="big"
-              onClick={() => {
-                // Open synchronously, in the same click, so the browser
-                // doesn't treat it as a blocked pop-up — punch() below is
-                // async and firing the map open after an await would risk
-                // that.
-                const links = buildMapsLinks(trip.stops);
-                if (links[0]) window.open(links[0], '_blank', 'noopener');
-                punch('/api/punches/left-warehouse', { trip_id: trip.id }, (ts) => { trip.left_warehouse_at = ts; setTrips([...trips]); });
-              }}
-            >
-              Left Warehouse
-            </button>
+            <div className="card">
+              <h4>Who's on this vehicle today?</h4>
+              <div className="row">
+                <label>Driver
+                  <select value={driverId} onChange={(e) => setDriverId(e.target.value)}>
+                    <option value="">— select —</option>
+                    {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </label>
+                <label>Cash collector
+                  <select value={collectorId} onChange={(e) => setCollectorId(e.target.value)}>
+                    <option value="">— select —</option>
+                    {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="row">
+                <span>Crew (optional):</span>
+                {staff.map((s) => (
+                  <label key={s.id} style={{ marginRight: '0.75em' }}>
+                    <input type="checkbox" checked={crewIds.includes(s.id)} onChange={() => toggleCrew(s.id)} />
+                    {' '}{s.name}
+                  </label>
+                ))}
+              </div>
+              <button
+                className="big"
+                disabled={!driverId || !collectorId}
+                onClick={() => {
+                  // Open synchronously, in the same click, so the browser
+                  // doesn't treat it as a blocked pop-up — punch() below is
+                  // async and firing the map open after an await would risk
+                  // that.
+                  const links = buildMapsLinks(trip.stops);
+                  if (links[0]) window.open(links[0], '_blank', 'noopener');
+                  punch(
+                    '/api/punches/left-warehouse',
+                    { trip_id: trip.id, driver_id: driverId, cash_collected_by: collectorId, crew_ids: crewIds },
+                    (ts) => { trip.left_warehouse_at = ts; setTrips([...trips]); }
+                  );
+                }}
+              >
+                Left Warehouse
+              </button>
+              {(!driverId || !collectorId) && <p className="hint">Driver and cash collector are required before leaving.</p>}
+            </div>
           ) : (
             <>
               <p className="hint">Left warehouse: {new Date(trip.left_warehouse_at).toLocaleTimeString()}</p>
