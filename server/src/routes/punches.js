@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { query, queryOne } from '../db/index.js';
+import { query, queryOne, withTransaction } from '../db/index.js';
 import { learnFromCompletedTrip } from '../services/learning.js';
 import { generateDailyReport } from '../services/reports.js';
 
@@ -13,12 +13,31 @@ function nowOr(timestamp) {
   return timestamp || new Date().toISOString();
 }
 
+// Body: { trip_id, timestamp, driver_id, cash_collected_by, crew_ids? }
+// driver_id and cash_collected_by are required — this is the "day picker"
+// moment: the crew for this vehicle for the day is locked in right here,
+// at the point the vehicle actually leaves. crew_ids is optional (vans
+// often run with none/one, trucks up to three) and may repeat a person
+// already used as driver/collector (e.g. driver doubling as collector).
 punchesRouter.post('/left-warehouse', async (req, res) => {
-  const { trip_id, timestamp } = req.body;
-  await query(
-    "UPDATE trips SET left_warehouse_at = $1, status = 'in_progress' WHERE id = $2",
-    [nowOr(timestamp), trip_id]
-  );
+  const { trip_id, timestamp, driver_id, cash_collected_by, crew_ids = [] } = req.body;
+  if (!trip_id || !driver_id || !cash_collected_by) {
+    return res.status(400).json({ error: 'trip_id, driver_id and cash_collected_by are required' });
+  }
+
+  await withTransaction(async (client) => {
+    await client.query(
+      "UPDATE trips SET left_warehouse_at = $1, status = 'in_progress', driver_id = $2, cash_collected_by = $3 WHERE id = $4",
+      [nowOr(timestamp), driver_id, cash_collected_by, trip_id]
+    );
+    for (const staffId of crew_ids) {
+      await client.query(
+        'INSERT INTO trip_crew (trip_id, staff_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [trip_id, staffId]
+      );
+    }
+  });
+
   res.json({ ok: true });
 });
 
