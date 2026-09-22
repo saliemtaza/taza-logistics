@@ -37,8 +37,14 @@ async function geocodeAddress(address) {
  * button) knows whether to call again.
  */
 export async function geocodeMissingCustomers() {
+  // geocode_failed_at IS NULL excludes addresses that have already failed —
+  // without this, a single permanently-bad address (Google can never
+  // resolve it) stays "pending" forever, and the client's retry-until-done
+  // loop (CustomersPage.jsx) spins on it indefinitely. A failed address
+  // only comes back into play via an explicit manual Retry (regeocodeCustomer
+  // below), which clears geocode_failed_at.
   const pending = await query(
-    'SELECT id, address FROM customers WHERE lat IS NULL OR lng IS NULL LIMIT $1',
+    'SELECT id, address FROM customers WHERE (lat IS NULL OR lng IS NULL) AND geocode_failed_at IS NULL LIMIT $1',
     [BATCH_SIZE]
   );
 
@@ -48,18 +54,24 @@ export async function geocodeMissingCustomers() {
     try {
       const { lat, lng } = await geocodeAddress(customer.address);
       await query(
-        'UPDATE customers SET lat = $1, lng = $2, geocoded_at = $3 WHERE id = $4',
+        'UPDATE customers SET lat = $1, lng = $2, geocoded_at = $3, geocode_failed_at = NULL WHERE id = $4',
         [lat, lng, new Date().toISOString(), customer.id]
       );
       results.succeeded += 1;
     } catch (err) {
+      await query('UPDATE customers SET geocode_failed_at = $1 WHERE id = $2', [new Date().toISOString(), customer.id]);
       results.failed.push({ id: customer.id, address: customer.address, error: err.message });
     }
     // Small delay to stay well clear of rate limits — irrelevant at this volume, but polite.
     await new Promise((r) => setTimeout(r, 50));
   }
 
-  const [{ count }] = await query('SELECT COUNT(*) AS count FROM customers WHERE lat IS NULL OR lng IS NULL');
+  // Only counts rows still eligible for auto-batching — a failed row just
+  // marked above is deliberately excluded, so the client's loop actually
+  // terminates instead of retrying the same dead address forever.
+  const [{ count }] = await query(
+    'SELECT COUNT(*) AS count FROM customers WHERE (lat IS NULL OR lng IS NULL) AND geocode_failed_at IS NULL'
+  );
   results.stillPending = parseInt(count, 10);
 
   return results;
@@ -89,12 +101,17 @@ export async function regeocodeCustomer(customerId) {
   const customer = await queryOne('SELECT id, address FROM customers WHERE id = $1', [customerId]);
   if (!customer) throw new Error('Customer not found');
 
-  const { lat, lng } = await geocodeAddress(customer.address);
-  await query(
-    'UPDATE customers SET lat = $1, lng = $2, geocoded_at = $3 WHERE id = $4',
-    [lat, lng, new Date().toISOString(), customerId]
-  );
-  return { lat, lng };
+  try {
+    const { lat, lng } = await geocodeAddress(customer.address);
+    await query(
+      'UPDATE customers SET lat = $1, lng = $2, geocoded_at = $3, geocode_failed_at = NULL WHERE id = $4',
+      [lat, lng, new Date().toISOString(), customerId]
+    );
+    return { lat, lng };
+  } catch (err) {
+    await query('UPDATE customers SET geocode_failed_at = $1 WHERE id = $2', [new Date().toISOString(), customerId]);
+    throw err;
+  }
 }
 
 /**
