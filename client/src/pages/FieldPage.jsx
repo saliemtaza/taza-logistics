@@ -231,7 +231,26 @@ export default function FieldPage() {
                           Arrived
                         </button>
                       ) : !stop.left_at ? (
-                        <button onClick={() => punch('/api/punches/left-customer', { trip_stop_id: stop.id }, (ts) => { stop.left_at = ts; setTrips([...trips]); })}>
+                        <button
+                          onClick={() => {
+                            // Open synchronously in the same click (see the
+                            // Left Warehouse handler above for why) — a
+                            // single-destination link to just the NEXT
+                            // not-yet-left stop, not the full original
+                            // route, so re-navigating mid-trip never routes
+                            // back through customers already done. Origin
+                            // is left out deliberately, same reason as
+                            // buildMapsLinks: Maps uses the driver's real
+                            // current location instead.
+                            const idx = trip.stops.findIndex((s) => s.id === stop.id);
+                            const nextStop = trip.stops.slice(idx + 1).find((s) => !s.left_at);
+                            if (nextStop?.address) {
+                              const params = new URLSearchParams({ api: '1', destination: nextStop.address, travelmode: 'driving' });
+                              window.open(`https://www.google.com/maps/dir/?${params.toString()}`, '_blank', 'noopener');
+                            }
+                            punch('/api/punches/left-customer', { trip_stop_id: stop.id }, (ts) => { stop.left_at = ts; setTrips([...trips]); });
+                          }}
+                        >
                           Left customer
                         </button>
                       ) : (
