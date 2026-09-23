@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.3.0';
+export const APP_VERSION = '1.3.1';
 
 export const CHANGELOG = [
+  {
+    version: '1.3.1',
+    date: '2026-09-23',
+    notes: 'Fixed a single stop occasionally getting stranded away from its natural cluster (e.g. one Edenvale stop visited alone while the rest of Edenvale gets grouped separately) — the route-sequencing step can now relocate a single stop, not just reverse whole segments.',
+  },
   {
     version: '1.3.0',
     date: '2026-09-23',

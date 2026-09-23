@@ -162,6 +162,44 @@ function twoOptImprove(tour, matrix, maxIterations = 200) {
 }
 
 /**
+ * Or-opt: tries relocating each single stop (not warehouse endpoints) to
+ * every other position in the tour, keeping any move that shortens it.
+ * Complements 2-opt rather than replacing it — 2-opt can only reverse a
+ * whole segment, which can't fix one stop stranded far from the cluster it
+ * actually belongs to (exactly what showed up on real data: a single
+ * Edenvale stop landing as the tour's very first pick, before any
+ * direction bias exists to steer it, while its other Edenvale neighbours
+ * end up grouped separately). Relocating just that one stop is what
+ * segment-reversal structurally cannot do.
+ */
+function orOptImprove(tour, matrix, maxIterations = 100) {
+  let best = [...tour];
+  let bestLength = tourLength(best, matrix);
+  let improved = true;
+  let iterations = 0;
+
+  while (improved && iterations < maxIterations) {
+    improved = false;
+    iterations += 1;
+    for (let i = 1; i < best.length - 1; i++) { // never move the warehouse endpoints
+      const stop = best[i];
+      const withoutStop = [...best.slice(0, i), ...best.slice(i + 1)];
+      for (let j = 1; j < withoutStop.length; j++) {
+        if (j === i) continue; // same position, no-op
+        const candidate = [...withoutStop.slice(0, j), stop, ...withoutStop.slice(j)];
+        const candidateLength = tourLength(candidate, matrix);
+        if (candidateLength < bestLength - 1e-6) {
+          best = candidate;
+          bestLength = candidateLength;
+          improved = true;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/**
  * Sequence one vehicle's stops into an optimised warehouse -> ... -> warehouse
  * loop. Returns ordered customer list + per-leg distances (km, straight-line).
  */
@@ -174,6 +212,7 @@ export function sequenceRoute(warehouse, customers) {
   let tour = directionAwareTour(warehouse, points, matrix);
   tour.push(0); // return to warehouse
   tour = twoOptImprove(tour, matrix);
+  tour = orOptImprove(tour, matrix);
   // twoOptImprove preserves endpoints (index 0 fixed as start), re-close the loop:
   if (tour[tour.length - 1] !== 0) tour.push(0);
 
