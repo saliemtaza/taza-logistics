@@ -46,6 +46,22 @@ const DIRECTION_WEIGHT = 1.5;
 const ANGLE_TOLERANCE_DEG = 40;
 
 /**
+ * How far (km, real distance from the vehicle's own current position) a
+ * genuine Tier 2 pick — anchorBearing already set, Tier 1 came up
+ * completely empty — may be from that vehicle before it's rejected instead
+ * of accepted. Without this, a vehicle with spare capacity after its own
+ * area is exhausted would happily accept an isolated, distant leftover
+ * stop and drag the whole route out to reach it (live example: a single
+ * stray stop turned a compact local route into a 46km/1h9m detour). Never
+ * applies to a vehicle's first-ever stop (clusterCustomers.length === 0) —
+ * a vehicle with nothing yet must accept whatever's next regardless of
+ * distance, or it never starts at all. A rejected Tier 2 candidate isn't
+ * lost — it just falls through to overflow, for deliberate manual
+ * placement instead of an automatic, excessive detour.
+ */
+const MAX_TIER2_DETOUR_KM = 15;
+
+/**
  * Build a full distance matrix (km, straight-line) for a set of points.
  * Straight-line is used for the search/optimisation phase so this runs
  * instantly and works even with no map API access. Real road distance is
@@ -64,25 +80,50 @@ function buildDistanceMatrix(points) {
   return matrix;
 }
 
-function nearestNeighborTour(matrix, startIndex) {
+/**
+ * Builds a vehicle's stop order the same way stops get ASSIGNED to it in
+ * the first place: real distance, softly biased (DIRECTION_WEIGHT) toward
+ * staying on the heading set by the tour's own first stop. Plain nearest-
+ * neighbor (the old version of this function) has no memory of which way
+ * it's already travelling, so on a cluster that spans more than one real
+ * area it can zigzag back and forth between them — 2-opt afterward only
+ * fixes local crossings, it doesn't reliably undo that shape. This keeps a
+ * vehicle's route grouped by area the same way its stop LIST is grouped,
+ * so a manually-moved stop also gets this treatment (via costOutRoute ->
+ * sequenceRoute), not just a fresh Generate.
+ *
+ * points[0] must be the warehouse; points[1..] the customers, in the same
+ * order as matrix's rows/columns.
+ */
+function directionAwareTour(warehouse, points, matrix) {
   const n = matrix.length;
   const visited = new Array(n).fill(false);
-  const tour = [startIndex];
-  visited[startIndex] = true;
+  const tour = [0];
+  visited[0] = true;
 
-  let current = startIndex;
+  let current = 0;
+  let anchorBearing = null;
+
   for (let step = 1; step < n; step++) {
-    let nearest = -1;
-    let nearestDist = Infinity;
+    let best = -1;
+    let bestScore = Infinity;
     for (let j = 0; j < n; j++) {
-      if (!visited[j] && matrix[current][j] < nearestDist) {
-        nearestDist = matrix[current][j];
-        nearest = j;
+      if (visited[j]) continue;
+      const dist = matrix[current][j];
+      let score = dist;
+      if (anchorBearing != null) {
+        const angleDiff = angularDifference(bearingFromWarehouse(warehouse, points[j]), anchorBearing);
+        score = dist * (1 + DIRECTION_WEIGHT * (angleDiff / 180));
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        best = j;
       }
     }
-    tour.push(nearest);
-    visited[nearest] = true;
-    current = nearest;
+    tour.push(best);
+    visited[best] = true;
+    if (anchorBearing == null) anchorBearing = bearingFromWarehouse(warehouse, points[best]);
+    current = best;
   }
   return tour;
 }
@@ -130,7 +171,7 @@ export function sequenceRoute(warehouse, customers) {
   const points = [warehouse, ...customers.map((c) => ({ lat: c.lat, lng: c.lng }))];
   const matrix = buildDistanceMatrix(points);
 
-  let tour = nearestNeighborTour(matrix, 0);
+  let tour = directionAwareTour(warehouse, points, matrix);
   tour.push(0); // return to warehouse
   tour = twoOptImprove(tour, matrix);
   // twoOptImprove preserves endpoints (index 0 fixed as start), re-close the loop:
@@ -415,6 +456,13 @@ export function planRoutes({ orders, vehicles, warehouse, openTime, closeTime, f
           // warehouse until this vehicle has actually accepted a stop.
           const dist = haversineKm(currentPoint, candidate);
           const driveDist = haversineKm(drivePoint, candidate);
+
+          // Tier 2 only (strict === false, anchorBearing already set) and
+          // not this vehicle's very first stop — see MAX_TIER2_DETOUR_KM.
+          if (!strict && anchorBearing != null && clusterCustomers.length > 0 && driveDist > MAX_TIER2_DETOUR_KM) {
+            continue;
+          }
+
           const legMinutes = (driveDist / vehicle.avg_speed_kmh) * 60;
           const dwellMinutes = candidate.avg_dwell_minutes ?? 10;
           const returnMinutes = (haversineKm(candidate, warehouse) / vehicle.avg_speed_kmh) * 60;

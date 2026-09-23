@@ -2,9 +2,19 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.1.1';
+export const APP_VERSION = '1.3.0';
 
 export const CHANGELOG = [
+  {
+    version: '1.3.0',
+    date: '2026-09-23',
+    notes: 'Fixed routes zigzagging between areas within a single vehicle\'s stop order (e.g. jumping back and forth between two suburbs). A vehicle picking up an isolated, distant leftover stop now drops it to overflow for manual placement instead of dragging the whole route into a large detour.',
+  },
+  {
+    version: '1.2.0',
+    date: '2026-09-23',
+    notes: 'Orders from an uploaded CSV that don\'t match any customer no longer vanish — they now show in a "Not recognised" list on Today\'s Orders, where they can be matched to the correct customer and placed, or dismissed.',
+  },
   {
     version: '1.1.1',
     date: '2026-09-23',

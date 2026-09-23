@@ -76,7 +76,7 @@ ordersRouter.post('/upload', upload.single('file'), async (req, res) => {
         ? await client.query('SELECT id FROM customers WHERE code = $1', [code])
         : await client.query('SELECT id FROM customers WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))', [name]);
       const customer = customerResult.rows[0];
-      if (!customer) { notFound.push(code || name); continue; }
+      if (!customer) { notFound.push({ name: code || name, value_rand: value }); continue; }
 
       await client.query('INSERT INTO orders (customer_id, order_date, value_rand) VALUES ($1, $2, $3)', [customer.id, date, value]);
       inserted += 1;

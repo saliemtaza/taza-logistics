@@ -12,6 +12,12 @@ export default function DailyOrdersPage() {
   const [search, setSearch] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  // Rows from the last upload whose code/name didn't match any customer —
+  // dropped silently before, now kept here so they can be manually
+  // resolved (matched to an existing customer, e.g. a typo/alias) rather
+  // than the order just vanishing with no way to act on it.
+  const [unmatched, setUnmatched] = useState([]);
+  const [resolveTo, setResolveTo] = useState({}); // unmatched row index -> customer_id string
 
   useEffect(() => {
     api.get('/api/customers').then(setCustomers);
@@ -31,7 +37,8 @@ export default function DailyOrdersPage() {
     setBusy(true);
     try {
       const result = await api.upload('/api/orders/upload', file, { date });
-      setMessage(`Uploaded: ${result.inserted} order(s) matched.${result.notFound.length ? ` ${result.notFound.length} customer(s) not found: ${result.notFound.join(', ')}` : ''} Review below before generating the route.`);
+      setUnmatched(result.notFound || []);
+      setMessage(`Uploaded: ${result.inserted} order(s) matched.${result.notFound.length ? ` ${result.notFound.length} not recognised — resolve them below.` : ''} Review below before generating the route.`);
       await reloadOrders();
     } catch (err) {
       setMessage(`Error: ${err.message}`);
@@ -52,6 +59,27 @@ export default function DailyOrdersPage() {
 
   function setValue(customerId, value) {
     setSelected((prev) => ({ ...prev, [customerId]: value }));
+  }
+
+  // Attaches an unmatched upload row's value to a real customer picked
+  // manually (e.g. the CSV had a typo/old name) — adds it to today's
+  // selected list just like ticking it by hand, then removes it from the
+  // unmatched list since it's now resolved.
+  function resolveUnmatched(index) {
+    const customerId = resolveTo[index];
+    if (!customerId) return;
+    const row = unmatched[index];
+    setSelected((prev) => ({ ...prev, [customerId]: String(row.value_rand) }));
+    setUnmatched((prev) => prev.filter((_, i) => i !== index));
+    setResolveTo((prev) => {
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
+  }
+
+  function dismissUnmatched(index) {
+    setUnmatched((prev) => prev.filter((_, i) => i !== index));
   }
 
   async function save() {
@@ -89,6 +117,39 @@ export default function DailyOrdersPage() {
         <input placeholder="Search customers..." value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
       <p className="hint">{selectedCount} customer(s) selected for {date}. This list is your review/confirm step, whether built by upload or by hand — check it before generating the route. Type a customer's name to find them — the full list only appears once you search.</p>
+
+      {unmatched.length > 0 && (
+        <section className="card">
+          <h3 className="error">Not recognised from upload ({unmatched.length})</h3>
+          <p className="hint">
+            These didn't match any customer by code or name — could be a typo, an old name, or a
+            genuinely new customer not in the database yet. Match to the correct customer below, or
+            dismiss and add them via the Customers page first.
+          </p>
+          <table>
+            <thead><tr><th>From CSV</th><th>Value (R)</th><th>Match to customer</th><th></th></tr></thead>
+            <tbody>
+              {unmatched.map((row, i) => (
+                <tr key={i}>
+                  <td>{row.name}</td>
+                  <td>R{row.value_rand}</td>
+                  <td>
+                    <select value={resolveTo[i] || ''} onChange={(e) => setResolveTo((prev) => ({ ...prev, [i]: e.target.value }))}>
+                      <option value="">— select customer —</option>
+                      {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    <button onClick={() => resolveUnmatched(i)} disabled={!resolveTo[i]}>Place</button>
+                    {' '}
+                    <button onClick={() => dismissUnmatched(i)}>Dismiss</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
 
       <table>
         <thead><tr><th></th><th>Customer</th><th>Address</th><th>Order value (R)</th></tr></thead>
