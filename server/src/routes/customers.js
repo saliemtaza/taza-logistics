@@ -113,17 +113,23 @@ customersRouter.post('/upload', upload.single('file'), async (req, res) => {
         if (addressChanged || (hasCoords && missingCoords)) {
           if (hasCoords) {
             // File already supplies coordinates — use them directly and
-            // skip the paid Google geocode call entirely.
+            // skip the paid Google geocode call entirely. Also clears
+            // geocode_failed_at: if this row previously failed geocoding
+            // and now arrives with real coordinates, that's resolved.
             await client.query(
-              `UPDATE customers SET address = $1, lat = $2, lng = $3, geocoded_at = $4
+              `UPDATE customers SET address = $1, lat = $2, lng = $3, geocoded_at = $4, geocode_failed_at = NULL
                WHERE id = $5`,
               [address, lat, lng, new Date().toISOString(), existing.id]
             );
           } else {
             // No coordinates in the file — clear cached ones so the
-            // background geocoder picks this customer up.
+            // background geocoder picks this customer up. Also clears
+            // geocode_failed_at: a changed address is a fresh address as
+            // far as geocoding is concerned, even if the OLD address had
+            // permanently failed — without this, a corrected address would
+            // stay silently excluded from auto-geocoding forever.
             await client.query(
-              `UPDATE customers SET address = $1, lat = NULL, lng = NULL, geocoded_at = NULL
+              `UPDATE customers SET address = $1, lat = NULL, lng = NULL, geocoded_at = NULL, geocode_failed_at = NULL
                WHERE id = $2`,
               [address, existing.id]
             );

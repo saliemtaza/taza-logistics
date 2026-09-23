@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.1.1';
 
 export const CHANGELOG = [
+  {
+    version: '1.1.1',
+    date: '2026-09-23',
+    notes: 'Fixed: a customer address correction (via CSV re-upload) is no longer silently excluded from geocoding forever if that customer had previously failed geocoding.',
+  },
   {
     version: '1.1.0',
     date: '2026-09-23',
