@@ -5,6 +5,37 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// Unmatched upload rows only ever existed in this page's memory, so a
+// refresh made them vanish (and any customer "Placed" from them but never
+// saved vanished too). They're now kept per date in localStorage so they
+// survive a reload until they're placed or dismissed.
+const unmatchedKey = (date) => `taza_unmatched_orders_${date}`;
+
+function loadUnmatched(date) {
+  try {
+    const raw = localStorage.getItem(unmatchedKey(date));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function storeUnmatched(date, rows) {
+  try {
+    if (rows.length) localStorage.setItem(unmatchedKey(date), JSON.stringify(rows));
+    else localStorage.removeItem(unmatchedKey(date));
+  } catch {
+    /* storage unavailable — page still works, rows just won't survive a refresh */
+  }
+}
+
+function buildOrders(selected) {
+  return Object.entries(selected)
+    .filter(([, v]) => v !== '' && !isNaN(parseFloat(v)))
+    .map(([customer_id, value_rand]) => ({ customer_id: parseInt(customer_id, 10), value_rand: parseFloat(value_rand) }));
+}
+
 export default function DailyOrdersPage() {
   const [date, setDate] = useState(todayStr());
   const [customers, setCustomers] = useState([]);
@@ -12,10 +43,7 @@ export default function DailyOrdersPage() {
   const [search, setSearch] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
-  // Rows from the last upload whose code/name didn't match any customer —
-  // dropped silently before, now kept here so they can be manually
-  // resolved (matched to an existing customer, e.g. a typo/alias) rather
-  // than the order just vanishing with no way to act on it.
+  // Rows from the last upload whose code/name didn't match any customer.
   const [unmatched, setUnmatched] = useState([]);
   const [resolveTo, setResolveTo] = useState({}); // unmatched row index -> customer_id string
 
@@ -29,7 +57,17 @@ export default function DailyOrdersPage() {
     for (const o of orders) map[o.customer_id] = String(o.value_rand);
     setSelected(map);
   }
-  useEffect(() => { reloadOrders(); }, [date]);
+  useEffect(() => {
+    setUnmatched(loadUnmatched(date));
+    setResolveTo({});
+    reloadOrders();
+  }, [date]);
+
+  function updateUnmatched(rows) {
+    setUnmatched(rows);
+    storeUnmatched(date, rows);
+    setResolveTo({}); // indices shift whenever the list changes
+  }
 
   async function handleUpload(e) {
     const file = e.target.files[0];
@@ -37,8 +75,9 @@ export default function DailyOrdersPage() {
     setBusy(true);
     try {
       const result = await api.upload('/api/orders/upload', file, { date });
-      setUnmatched(result.notFound || []);
-      setMessage(`Uploaded: ${result.inserted} order(s) matched.${result.notFound.length ? ` ${result.notFound.length} not recognised — resolve them below.` : ''} Review below before generating the route.`);
+      const notFound = result.notFound || [];
+      updateUnmatched(notFound);
+      setMessage(`Uploaded: ${result.inserted} order(s) matched.${notFound.length ? ` ${notFound.length} not recognised — resolve them below.` : ''} Review below before generating the route.`);
       await reloadOrders();
     } catch (err) {
       setMessage(`Error: ${err.message}`);
@@ -62,36 +101,42 @@ export default function DailyOrdersPage() {
   }
 
   // Attaches an unmatched upload row's value to a real customer picked
-  // manually (e.g. the CSV had a typo/old name) — adds it to today's
-  // selected list just like ticking it by hand, then removes it from the
-  // unmatched list since it's now resolved.
-  function resolveUnmatched(index) {
+  // manually. Unlike before, this SAVES straight away — placing a row only
+  // in page state meant it disappeared on refresh if Save was never pressed.
+  async function resolveUnmatched(index) {
     const customerId = resolveTo[index];
     if (!customerId) return;
     const row = unmatched[index];
-    setSelected((prev) => ({ ...prev, [customerId]: String(row.value_rand) }));
-    setUnmatched((prev) => prev.filter((_, i) => i !== index));
-    setResolveTo((prev) => {
-      const next = { ...prev };
-      delete next[index];
-      return next;
-    });
+    const nextSelected = { ...selected, [customerId]: String(row.value_rand) };
+
+    setBusy(true);
+    try {
+      await api.post('/api/orders', { date, orders: buildOrders(nextSelected) });
+      setSelected(nextSelected);
+      updateUnmatched(unmatched.filter((_, i) => i !== index));
+      setMessage(`Placed "${row.name}" (R${row.value_rand}) and saved the order list.`);
+    } catch (err) {
+      setMessage(`Error: ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   function dismissUnmatched(index) {
-    setUnmatched((prev) => prev.filter((_, i) => i !== index));
+    updateUnmatched(unmatched.filter((_, i) => i !== index));
   }
 
   async function save() {
-    const orders = Object.entries(selected)
-      .filter(([, v]) => v !== '' && !isNaN(parseFloat(v)))
-      .map(([customer_id, value_rand]) => ({ customer_id: parseInt(customer_id, 10), value_rand: parseFloat(value_rand) }));
+    const orders = buildOrders(selected);
 
     if (orders.length === 0) { setMessage('Add at least one order with a value.'); return; }
 
     setMessage('Saving...');
     const res = await api.post('/api/orders', { date, orders });
-    setMessage(`Saved ${res.count} order(s) for ${date}.`);
+    const outstanding = unmatched.length
+      ? ` Warning: ${unmatched.length} uploaded row(s) are still unmatched and NOT in this list (R${unmatched.reduce((s, r) => s + Number(r.value_rand || 0), 0)}).`
+      : '';
+    setMessage(`Saved ${res.count} order(s) for ${date}.${outstanding}`);
   }
 
   // Show already-selected customers regardless of search (so you can review
@@ -106,6 +151,14 @@ export default function DailyOrdersPage() {
   });
   const selectedCount = Object.keys(selected).length;
 
+  // Selected orders whose customer isn't in the customers list at all
+  // (e.g. inactive/filtered out) — they count in the total but have no row
+  // to show, which is how "26 selected" can sit above 25 visible rows.
+  const knownIds = new Set(customers.map((c) => String(c.id)));
+  const hiddenSelected = customers.length
+    ? Object.keys(selected).filter((id) => !knownIds.has(String(id)))
+    : [];
+
   return (
     <div className="page">
       <h2>Today's orders</h2>
@@ -118,13 +171,21 @@ export default function DailyOrdersPage() {
       </div>
       <p className="hint">{selectedCount} customer(s) selected for {date}. This list is your review/confirm step, whether built by upload or by hand — check it before generating the route. Type a customer's name to find them — the full list only appears once you search.</p>
 
+      {hiddenSelected.length > 0 && (
+        <p className="warn">
+          {hiddenSelected.length} selected order(s) belong to customer id(s) {hiddenSelected.join(', ')}, which
+          aren't in the customer list above, so they have no row here (they will still be routed).
+        </p>
+      )}
+
       {unmatched.length > 0 && (
         <section className="card">
           <h3 className="error">Not recognised from upload ({unmatched.length})</h3>
           <p className="hint">
             These didn't match any customer by code or name — could be a typo, an old name, or a
-            genuinely new customer not in the database yet. Match to the correct customer below, or
-            dismiss and add them via the Customers page first.
+            genuinely new customer not in the database yet. Match to the correct customer below (it
+            saves the order list straight away), or dismiss. These stay here after a refresh until
+            you place or dismiss them.
           </p>
           <table>
             <thead><tr><th>From CSV</th><th>Value (R)</th><th>Match to customer</th><th></th></tr></thead>
@@ -140,9 +201,9 @@ export default function DailyOrdersPage() {
                     </select>
                   </td>
                   <td>
-                    <button onClick={() => resolveUnmatched(i)} disabled={!resolveTo[i]}>Place</button>
+                    <button onClick={() => resolveUnmatched(i)} disabled={!resolveTo[i] || busy}>Place</button>
                     {' '}
-                    <button onClick={() => dismissUnmatched(i)}>Dismiss</button>
+                    <button onClick={() => dismissUnmatched(i)} disabled={busy}>Dismiss</button>
                   </td>
                 </tr>
               ))}

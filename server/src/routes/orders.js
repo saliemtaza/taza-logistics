@@ -68,6 +68,11 @@ ordersRouter.post('/upload', upload.single('file'), async (req, res) => {
     for (const row of records) {
       const code = row.code || row.Code || null;
       const name = row.name || row.Name || row['Customer Name'];
+      // Zoho's Invoice Details export ends with a totals row: no customer
+      // name, just a grand total in Balance. Without this check it was being
+      // reported as an "unrecognised customer" worth thousands of Rand.
+      if (!code && !String(name ?? '').trim()) continue;
+
       const rawValue = row.value_rand ?? row.value ?? row.Value ?? row.Balance;
       const value = parseFloat(String(rawValue ?? '').replace(/[R,\s"]/g, ''));
       if (!value) continue;
