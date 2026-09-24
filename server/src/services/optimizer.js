@@ -227,6 +227,87 @@ export function sequenceRoute(warehouse, customers) {
 }
 
 /**
+ * Costs a route for an EXACT given order — no direction-aware tour, no
+ * 2-opt, no Or-opt. This is what makes manual reordering actually stick:
+ * moveStop/moveOverflowStop (and every automatic Generate) go through
+ * sequenceRoute above, which always recomputes its own "best" order and
+ * would silently undo a manual placement on the very next re-cost. A
+ * human deliberately grouping stops (e.g. pulling a stranded Edenvale stop
+ * next to its neighbours) is instructing the route, not asking the
+ * optimizer's opinion — so this path trusts the given order completely.
+ */
+function costFixedOrder(warehouse, orderedCustomers) {
+  if (orderedCustomers.length === 0) return { orderedCustomers: [], legs: [], totalDistanceKm: 0 };
+
+  const points = [warehouse, ...orderedCustomers.map((c) => ({ lat: c.lat, lng: c.lng }))];
+  const matrix = buildDistanceMatrix(points);
+  const legs = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    legs.push(matrix[i][i + 1]);
+  }
+  legs.push(matrix[points.length - 1][0]); // return to warehouse
+  const totalDistanceKm = legs.reduce((a, b) => a + b, 0);
+
+  return { orderedCustomers, legs, totalDistanceKm };
+}
+
+/**
+ * Same fuel/time/payload costing as costOutRoute, but for an exact given
+ * order (via costFixedOrder) instead of letting sequenceRoute recompute
+ * one. Kept as a near-duplicate of costOutRoute rather than a shared
+ * flag/branch — the two have deliberately different jobs (one always
+ * finds its own order, one always trusts yours) and collapsing them into
+ * one function with an "auto vs manual" switch is exactly the kind of
+ * thing that's easy to get backwards under time pressure later.
+ */
+function costOutRouteFixedOrder(vehicle, warehouse, orderedCustomers, fuelPrices, safetyMarginPct, windowMinutes) {
+  const { legs, totalDistanceKm } = costFixedOrder(warehouse, orderedCustomers);
+  const dwellTotal = orderedCustomers.reduce((sum, c) => sum + (c.avg_dwell_minutes ?? 10), 0);
+  const driveMinutes = legs.reduce((sum, km) => sum + (km / vehicle.avg_speed_kmh) * 60, 0);
+  const hasDeliveries = orderedCustomers.some((c) => c.value_rand > 0);
+  const totalMinutes = (hasDeliveries ? vehicle.avg_loading_minutes : 0) + driveMinutes + dwellTotal;
+
+  const fuelPrice = fuelPrices[vehicle.fuel_type];
+  const fuelLitres = (totalDistanceKm / 100) * vehicle.fuel_consumption_l_per_100km;
+  const fuelCost = fuelPrice ? fuelLitres * fuelPrice : null;
+
+  return {
+    vehicle,
+    stops: orderedCustomers,
+    legDistancesKm: legs,
+    totalDistanceKm,
+    totalDurationMin: totalMinutes,
+    fitsWindow: totalMinutes * (1 + safetyMarginPct / 100) <= windowMinutes,
+    totalValueRand: orderedCustomers.reduce((s, c) => s + c.value_rand, 0),
+    fuelLitres,
+    fuelCost,
+  };
+}
+
+/**
+ * Manually reorder the stops WITHIN one vehicle's existing route — pure
+ * resequencing, no stop joins or leaves this vehicle (that's moveStop's
+ * job). orderedCustomerIds is the FULL new order for this route, as an
+ * array of customer_id — every id currently on the route must appear
+ * exactly once, or this throws rather than silently dropping/duplicating
+ * a stop. Uses costOutRouteFixedOrder, not costOutRoute, specifically so
+ * the algorithm doesn't re-sequence the manual order right back out.
+ */
+export function reorderRouteStops({ warehouse, route, orderedCustomerIds, fuelPrices, safetyMarginPct = 20, windowMinutes }) {
+  const byId = new Map(route.stops.map((c) => [c.customer_id, c]));
+
+  if (orderedCustomerIds.length !== route.stops.length || !orderedCustomerIds.every((id) => byId.has(id))) {
+    throw new Error('orderedCustomerIds must contain exactly the same customers already on this route, in the new order.');
+  }
+
+  const orderedCustomers = orderedCustomerIds.map((id) => byId.get(id));
+  const updatedRoute = { ...route, ...costOutRouteFixedOrder(route.vehicle, warehouse, orderedCustomers, fuelPrices, safetyMarginPct, windowMinutes) };
+  const warning = buildOverCapacityWarning(route.vehicle, updatedRoute);
+
+  return { route: updatedRoute, warning };
+}
+
+/**
  * Rank vehicles smallest to largest by payload_limit_rand — vans have a
  * concrete Rand cap, trucks are null (unlimited), which naturally sorts
  * them last without needing to hardcode vehicle_type.

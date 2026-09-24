@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.3.1';
+export const APP_VERSION = '1.4.0';
 
 export const CHANGELOG = [
+  {
+    version: '1.4.0',
+    date: '2026-09-23',
+    notes: 'Backend groundwork for manually reordering stops within a vehicle\'s route without the optimizer re-sequencing them back — not yet wired to a screen, so nothing changes for drivers or dispatch yet.',
+  },
   {
     version: '1.3.1',
     date: '2026-09-23',
