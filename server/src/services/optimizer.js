@@ -62,6 +62,30 @@ const ANGLE_TOLERANCE_DEG = 40;
 const MAX_TIER2_DETOUR_KM = 15;
 
 /**
+ * Stops this close (km, straight-line) to the warehouse are DIRECTION-
+ * NEUTRAL. A compass bearing from a point ~2 km from the warehouse is
+ * essentially noise — it can point anywhere — so the heading filter, the
+ * direction penalty and the detour cap were wrongly treating a handful of
+ * stops right next to the warehouse as "off-heading" for every vehicle
+ * heading out in a real direction. Live example (24 Sep 2026): four
+ * Newclare/Newlands stops ~2-4 km from the warehouse were rejected by the
+ * Kagiso vehicle (off-heading in tier 1, and >MAX_TIER2_DETOUR_KM from its
+ * last Kagiso stop in tier 2), so a later vehicle picked them up and got
+ * paired with South Hills: Newclare -> 13.8 km hop -> South Hills. Done by
+ * hand, the right answer was for the vehicle with spare room to just take
+ * them on the way out/back. Now: near-warehouse stops are always eligible
+ * in tier 1 (no heading test), skip the detour cap, carry no direction
+ * penalty, and never set a vehicle's heading — so whichever vehicle has
+ * room left once its own area is done absorbs them. Raise/lower this if
+ * "near the warehouse" should cover more/less ground.
+ */
+const NEAR_WAREHOUSE_KM = 5;
+
+function isNearWarehouse(warehouse, point) {
+  return haversineKm(warehouse, point) <= NEAR_WAREHOUSE_KM;
+}
+
+/**
  * Build a full distance matrix (km, straight-line) for a set of points.
  * Straight-line is used for the search/optimisation phase so this runs
  * instantly and works even with no map API access. Real road distance is
@@ -111,7 +135,7 @@ function directionAwareTour(warehouse, points, matrix) {
       if (visited[j]) continue;
       const dist = matrix[current][j];
       let score = dist;
-      if (anchorBearing != null) {
+      if (anchorBearing != null && !isNearWarehouse(warehouse, points[j])) {
         const angleDiff = angularDifference(bearingFromWarehouse(warehouse, points[j]), anchorBearing);
         score = dist * (1 + DIRECTION_WEIGHT * (angleDiff / 180));
       }
@@ -122,7 +146,7 @@ function directionAwareTour(warehouse, points, matrix) {
     }
     tour.push(best);
     visited[best] = true;
-    if (anchorBearing == null) anchorBearing = bearingFromWarehouse(warehouse, points[best]);
+    if (anchorBearing == null && !isNearWarehouse(warehouse, points[best])) anchorBearing = bearingFromWarehouse(warehouse, points[best]);
     current = best;
   }
   return tour;
@@ -529,7 +553,7 @@ export function planRoutes({ orders, vehicles, warehouse, openTime, closeTime, f
         loadMinutesApplied = true;
         currentPoint = biggestOrder;
         drivePoint = biggestOrder;
-        anchorBearing = bearingFromWarehouse(warehouse, biggestOrder);
+        anchorBearing = isNearWarehouse(warehouse, biggestOrder) ? null : bearingFromWarehouse(warehouse, biggestOrder);
         unassigned.splice(unassigned.indexOf(biggestOrder), 1);
       }
       // If it doesn't even fit the biggest vehicle, no vehicle in the fleet
@@ -563,8 +587,9 @@ export function planRoutes({ orders, vehicles, warehouse, openTime, closeTime, f
       for (const strict of tiers) {
         for (let i = 0; i < unassigned.length; i++) {
           const candidate = unassigned[i];
+          const candidateNearWarehouse = isNearWarehouse(warehouse, candidate);
 
-          if (strict) {
+          if (strict && !candidateNearWarehouse) {
             const headingDiff = angularDifference(bearingFromWarehouse(warehouse, candidate), anchorBearing);
             if (headingDiff > ANGLE_TOLERANCE_DEG) continue; // not this vehicle's direction yet — try tier 2 only if tier 1 comes up empty
           }
@@ -579,7 +604,7 @@ export function planRoutes({ orders, vehicles, warehouse, openTime, closeTime, f
 
           // Tier 2 only (strict === false, anchorBearing already set) and
           // not this vehicle's very first stop — see MAX_TIER2_DETOUR_KM.
-          if (!strict && anchorBearing != null && clusterCustomers.length > 0 && driveDist > MAX_TIER2_DETOUR_KM) {
+          if (!strict && anchorBearing != null && clusterCustomers.length > 0 && !candidateNearWarehouse && driveDist > MAX_TIER2_DETOUR_KM) {
             continue;
           }
 
@@ -597,7 +622,7 @@ export function planRoutes({ orders, vehicles, warehouse, openTime, closeTime, f
           if (overPayload || overStopCap || overTime) continue; // doesn't fit — try the next candidate, don't give up yet
 
           let score = dist;
-          if (anchorBearing != null) {
+          if (anchorBearing != null && !candidateNearWarehouse) {
             const angleDiff = angularDifference(bearingFromWarehouse(warehouse, candidate), anchorBearing);
             score = dist * (1 + DIRECTION_WEIGHT * (angleDiff / 180));
           }
@@ -622,7 +647,7 @@ export function planRoutes({ orders, vehicles, warehouse, openTime, closeTime, f
 
       const candidate = unassigned[bestIdx];
       clusterCustomers.push(candidate);
-      if (anchorBearing == null) anchorBearing = bearingFromWarehouse(warehouse, candidate);
+      if (anchorBearing == null && !isNearWarehouse(warehouse, candidate)) anchorBearing = bearingFromWarehouse(warehouse, candidate);
       clusterValue = bestTentativeValue;
       runningMinutes += bestLoadMinutes + bestLegMinutes + bestDwellMinutes;
       loadMinutesApplied = true;
