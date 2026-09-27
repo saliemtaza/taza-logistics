@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.4.0';
+export const APP_VERSION = '1.4.1';
 
 export const CHANGELOG = [
+  {
+    version: '1.4.1',
+    date: '2026-09-27',
+    notes: 'Fixed two bugs from the 24 Sep upload: (1) an uploaded order matched to a customer via "Not recognised" now saves immediately instead of only on the next Save, and unmatched rows now survive a refresh instead of vanishing; a blank/totals row from a Zoho export is no longer reported as an unrecognised customer. (2) Stops close to the warehouse (e.g. Newclare/Newlands) were being rejected by a vehicle already working a nearby area, on the grounds of "wrong direction" — direction is meaningless that close to the warehouse. They\'re now placed on whichever vehicle has room left, instead of getting stranded onto an unrelated route.',
+  },
   {
     version: '1.4.0',
     date: '2026-09-23',
