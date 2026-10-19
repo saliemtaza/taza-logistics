@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.4.1';
+export const APP_VERSION = '1.4.2';
 
 export const CHANGELOG = [
+  {
+    version: '1.4.2',
+    date: '2026-10-14',
+    notes: 'Route Plan: stops can now be dragged to reorder within a vehicle, or dragged onto another vehicle to move them there — faster than the existing checkbox + "move to" picker, which still works for moving several stops at once. New backend endpoint wires up the within-route reordering built last session but never connected to a screen.',
+  },
   {
     version: '1.4.1',
     date: '2026-09-27',

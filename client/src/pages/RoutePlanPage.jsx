@@ -110,6 +110,12 @@ export default function RoutePlanPage() {
   const [moveWarning, setMoveWarning] = useState('');
   const [selectedStops, setSelectedStops] = useState({}); // trip_id -> array of selected customer_ids
   const [selectedOverflow, setSelectedOverflow] = useState([]); // array of selected customer_ids from the overflow list
+  // Drag-and-drop state. dragging holds the stop currently being dragged —
+  // fromTripId is null for an overflow (unassigned) stop. dragOverKey marks
+  // whichever drop target the pointer is currently over, purely for the
+  // highlight — it plays no part in deciding what happens on drop.
+  const [dragging, setDragging] = useState(null); // { fromTripId: number|null, customerId }
+  const [dragOverKey, setDragOverKey] = useState(null);
 
   async function loadVehicleAvailability() {
     const rows = await api.get(`/api/vehicles/availability?date=${date}`);
@@ -237,6 +243,119 @@ export default function RoutePlanPage() {
     }
   }
 
+  // Re-orders the stops WITHIN one vehicle's route (no stop joins/leaves
+  // it) — this is the fast path for fixing a zigzag by hand: drag one stop
+  // a few places up or down instead of the select-and-move-elsewhere flow.
+  // Goes through /api/planning/reorder-stops, which uses the FIXED-order
+  // costing so the manual order sticks instead of the optimizer resequencing
+  // it straight back out.
+  async function reorderWithinRoute(route, orderedCustomerIds) {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await api.post('/api/planning/reorder-stops', { date, tripId: route.trip_id, orderedCustomerIds });
+      setPlan((prev) => ({
+        ...prev,
+        routes: prev.routes.map((r) => (r.trip_id === result.route.trip_id ? { ...r, ...result.route } : r)),
+      }));
+      setMoveWarning(result.warning || '');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Drag-and-drop equivalent of the existing checkbox + "move to" pickers,
+  // for a single stop at a time — same /move-stop endpoint, fromTripId
+  // omitted when the stop is coming off the overflow list. Faster for one
+  // stop; the checkbox flow above still covers moving several at once.
+  async function moveSingleStop(fromTripId, toTripId, customerId) {
+    setBusy(true);
+    setError('');
+    try {
+      const body = { date, toTripId, customerId };
+      if (fromTripId != null) body.fromTripId = fromTripId;
+      const result = await api.post('/api/planning/move-stop', body);
+      setPlan((prev) => ({
+        ...prev,
+        overflow: fromTripId == null ? prev.overflow.filter((o) => o.customer_id !== customerId) : prev.overflow,
+        routes: prev.routes.map((r) => {
+          if (result.fromRoute && r.trip_id === result.fromRoute.trip_id) return { ...r, ...result.fromRoute };
+          if (r.trip_id === result.toRoute.trip_id) return { ...r, ...result.toRoute };
+          return r;
+        }),
+      }));
+      setMoveWarning(result.warning || '');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleStopDragStart(fromTripId, customerId) {
+    return (e) => {
+      setDragging({ fromTripId: fromTripId ?? null, customerId });
+      e.dataTransfer.effectAllowed = 'move';
+    };
+  }
+
+  function handleDragEnd() {
+    setDragging(null);
+    setDragOverKey(null);
+  }
+
+  function handleDragOverTarget(key) {
+    return (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      if (dragOverKey !== key) setDragOverKey(key);
+    };
+  }
+
+  // Dropped directly on another stop: if it's within the SAME route, that's
+  // a reorder to this position; if it's a different route (or overflow),
+  // that's a move onto this route (the exact landing position is then
+  // decided by the move's own re-sequencing, same as the checkbox flow).
+  function handleDropOnStop(route, dropIndex) {
+    return (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragOverKey(null);
+      if (!dragging || busy) return;
+      const { fromTripId, customerId } = dragging;
+      setDragging(null);
+      if (fromTripId === route.trip_id) {
+        const currentIds = route.stops.map((s) => s.customer_id);
+        const fromIndex = currentIds.indexOf(customerId);
+        if (fromIndex === -1 || fromIndex === dropIndex) return;
+        const next = [...currentIds];
+        next.splice(fromIndex, 1);
+        const insertAt = fromIndex < dropIndex ? dropIndex - 1 : dropIndex;
+        next.splice(insertAt, 0, customerId);
+        reorderWithinRoute(route, next);
+      } else {
+        moveSingleStop(fromTripId, route.trip_id, customerId);
+      }
+    };
+  }
+
+  // Dropped on the route's section background rather than on a specific
+  // stop (e.g. an empty route, or below the last stop) — always a move
+  // onto this route, landing position decided by the move itself.
+  function handleDropOnRouteSection(route) {
+    return (e) => {
+      e.preventDefault();
+      setDragOverKey(null);
+      if (!dragging || busy) return;
+      const { fromTripId, customerId } = dragging;
+      setDragging(null);
+      if (fromTripId === route.trip_id) return;
+      moveSingleStop(fromTripId, route.trip_id, customerId);
+    };
+  }
+
   const totalCost = plan?.routes.reduce((s, r) => s + (r.fuelCost || 0), 0);
   const totalKm = plan?.routes.reduce((s, r) => s + r.totalDistanceKm, 0);
   const availableCount = vehicles.filter((v) => !unavailable[v.id]).length;
@@ -298,7 +417,13 @@ export default function RoutePlanPage() {
               <h3>Could not fit today ({plan.overflow.length})</h3>
               <ul>
                 {plan.overflow.map((o) => (
-                  <li key={o.customer_id}>
+                  <li
+                    key={o.customer_id}
+                    draggable={!busy}
+                    onDragStart={handleStopDragStart(null, o.customer_id)}
+                    onDragEnd={handleDragEnd}
+                    style={{ cursor: busy ? 'default' : 'grab' }}
+                  >
                     <label style={{ flexDirection: 'row', alignItems: 'center', gap: '0.5em' }}>
                       <input
                         type="checkbox"
@@ -306,6 +431,7 @@ export default function RoutePlanPage() {
                         checked={selectedOverflow.includes(o.customer_id)}
                         onChange={() => toggleOverflowSelected(o.customer_id)}
                       />
+                      <span title="Drag onto a vehicle below to place it">{'\u2630'}</span>
                       {o.name}
                       {o.value_rand > 0 && ` — deliver R${o.value_rand}`}
                       {o.collection_amount_rand > 0 && ` — collect R${o.collection_amount_rand}`}
@@ -337,7 +463,13 @@ export default function RoutePlanPage() {
           )}
 
           {plan.routes.map((route) => (
-            <section className="card" key={route.trip_id}>
+            <section
+              className="card"
+              key={route.trip_id}
+              onDragOver={handleDragOverTarget(`route-${route.trip_id}`)}
+              onDrop={handleDropOnRouteSection(route)}
+              style={dragOverKey === `route-${route.trip_id}` ? { background: '#eef3ff' } : undefined}
+            >
               <h3>
                 {route.vehicle.name} — rank {route.vehicle.efficiencyRank} of {vehicles.length} efficiency
                 {route.vehicle.costPerKm != null && ` (R${route.vehicle.costPerKm.toFixed(2)}/km)`}
@@ -349,22 +481,38 @@ export default function RoutePlanPage() {
                 {route.fuelCost != null && ` — est. fuel R${route.fuelCost.toFixed(2)}`}
               </p>
               <button onClick={() => printLoadingSheet(route, date)}>Print loading sheet</button>
+              <p className="hint">Drag a stop to reorder it within this route, or onto another vehicle to move it there.</p>
               <ol>
-                {route.stops.map((s, i) => (
-                  <li key={s.customer_id}>
-                    <label style={{ flexDirection: 'row', alignItems: 'center', gap: '0.5em' }}>
-                      <input
-                        type="checkbox"
-                        disabled={busy}
-                        checked={(selectedStops[route.trip_id] || []).includes(s.customer_id)}
-                        onChange={() => toggleStopSelected(route.trip_id, s.customer_id)}
-                      />
-                      {s.name} — {s.address} ({route.legDistancesKm[i]?.toFixed(1)} km leg)
-                      {s.value_rand > 0 && <span> · deliver R{s.value_rand}</span>}
-                      {s.collection_amount_rand > 0 && <span> · collect R{s.collection_amount_rand}</span>}
-                    </label>
-                  </li>
-                ))}
+                {route.stops.map((s, i) => {
+                  const key = `${route.trip_id}-${i}`;
+                  return (
+                    <li
+                      key={s.customer_id}
+                      draggable={!busy}
+                      onDragStart={handleStopDragStart(route.trip_id, s.customer_id)}
+                      onDragEnd={handleDragEnd}
+                      onDragOver={handleDragOverTarget(key)}
+                      onDrop={handleDropOnStop(route, i)}
+                      style={{
+                        cursor: busy ? 'default' : 'grab',
+                        background: dragOverKey === key ? '#dbe6ff' : undefined,
+                      }}
+                    >
+                      <label style={{ flexDirection: 'row', alignItems: 'center', gap: '0.5em' }}>
+                        <input
+                          type="checkbox"
+                          disabled={busy}
+                          checked={(selectedStops[route.trip_id] || []).includes(s.customer_id)}
+                          onChange={() => toggleStopSelected(route.trip_id, s.customer_id)}
+                        />
+                        <span title="Drag to reorder or move">{'\u2630'}</span>
+                        {s.name} — {s.address} ({route.legDistancesKm[i]?.toFixed(1)} km leg)
+                        {s.value_rand > 0 && <span> · deliver R{s.value_rand}</span>}
+                        {s.collection_amount_rand > 0 && <span> · collect R{s.collection_amount_rand}</span>}
+                      </label>
+                    </li>
+                  );
+                })}
               </ol>
               {plan.routes.length > 1 && (selectedStops[route.trip_id] || []).length > 0 && (
                 <div className="row" style={{ alignItems: 'center', gap: '0.5em' }}>
