@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { query, withTransaction } from '../db/index.js';
-import { planRoutes, moveStop, moveOverflowStop, rankVehiclesByEfficiency, minutesBetween } from '../services/optimizer.js';
+import { planRoutes, moveStop, moveOverflowStop, reorderRouteStops, rankVehiclesByEfficiency, minutesBetween } from '../services/optimizer.js';
 import { getRoadRoute } from '../services/geocode.js';
 import { rollupOldMonths } from '../services/reports.js';
 
@@ -478,4 +478,94 @@ planningRouter.post('/move-stop', async (req, res) => {
   });
 
   res.json({ fromRoute: updatedFromRoute, toRoute: updatedToRoute, warning });
+});
+
+// Body: { date, tripId, orderedCustomerIds }
+// Re-orders the stops WITHIN one vehicle's existing route (drag-to-reorder)
+// — no stop joins or leaves this vehicle, that's /move-stop's job. Uses
+// reorderRouteStops (costOutRouteFixedOrder), not the optimizer's own
+// sequencing, specifically so the dragged order sticks instead of being
+// resequenced straight back out. Persists the same way /move-stop persists
+// a single touched route: release this trip's FK references, wipe its
+// trip_stops, reinsert in the new order, re-point every order/collection.
+planningRouter.post('/reorder-stops', async (req, res) => {
+  const { date, tripId, orderedCustomerIds } = req.body;
+  if (!date || !tripId || !Array.isArray(orderedCustomerIds)) {
+    return res.status(400).json({ error: 'date, tripId and orderedCustomerIds (array) are required' });
+  }
+
+  const settings = await loadSettings();
+  if (!settings.warehouse_lat || !settings.warehouse_lng) {
+    return res.status(400).json({ error: 'Warehouse address is not set/geocoded yet — set it under Settings first.' });
+  }
+  const warehouse = { lat: parseFloat(settings.warehouse_lat), lng: parseFloat(settings.warehouse_lng) };
+  const fuelPrices = await loadFuelPrices();
+  const safetyMarginPct = parseFloat(settings.time_safety_margin_pct || '20');
+  const windowMinutes = minutesBetween(settings.open_time || '08:00', settings.close_time || '16:30');
+
+  // Re-attach today's efficiencyRank/costPerKm (same reason as /move-stop —
+  // computed fresh at plan-generation time, not stored on the vehicle row).
+  const availabilityOverrides = await query(
+    'SELECT vehicle_id, available FROM vehicle_availability WHERE date = $1', [date]
+  );
+  const unavailableIds = new Set(availabilityOverrides.filter((o) => !o.available).map((o) => o.vehicle_id));
+  const allActiveVehicles = await query('SELECT * FROM vehicles WHERE active = true');
+  const todaysVehicles = allActiveVehicles.filter((v) => !unavailableIds.has(v.id));
+  const rankedById = new Map(rankVehiclesByEfficiency(todaysVehicles, fuelPrices).map((v) => [v.id, v]));
+
+  const route = await loadTripWithVehicleAndStops(tripId);
+  if (!route) {
+    return res.status(404).json({ error: 'That trip could not be found \u2014 the plan may have been regenerated since you loaded this page.' });
+  }
+  route.vehicle = rankedById.get(route.vehicle.id) || route.vehicle;
+
+  let updatedRoute;
+  let warning;
+  try {
+    const result = reorderRouteStops({ warehouse, route, orderedCustomerIds, fuelPrices, safetyMarginPct, windowMinutes });
+    updatedRoute = result.route;
+    warning = result.warning;
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  await withTransaction(async (client) => {
+    await client.query(
+      "UPDATE orders SET status = 'pending', trip_stop_id = NULL WHERE trip_stop_id IN (SELECT id FROM trip_stops WHERE trip_id = $1)",
+      [tripId]
+    );
+    await client.query(
+      "UPDATE collections SET status = 'pending', trip_stop_id = NULL WHERE trip_stop_id IN (SELECT id FROM trip_stops WHERE trip_id = $1)",
+      [tripId]
+    );
+    await client.query('DELETE FROM trip_stops WHERE trip_id = $1', [tripId]);
+
+    await client.query(
+      `UPDATE trips SET planned_distance_km = $2, planned_duration_min = $3, planned_fuel_litres = $4, planned_fuel_cost_rand = $5
+       WHERE id = $1`,
+      [tripId, updatedRoute.totalDistanceKm, updatedRoute.totalDurationMin, updatedRoute.fuelLitres, updatedRoute.fuelCost]
+    );
+
+    for (let i = 0; i < updatedRoute.stops.length; i++) {
+      const stop = updatedRoute.stops[i];
+      const legKm = updatedRoute.legDistancesKm[i] ?? null;
+      const stopResult = await client.query(
+        `INSERT INTO trip_stops (trip_id, customer_id, seq, leg_distance_km, delivery_value_rand, collection_amount_rand)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        [tripId, stop.customer_id, i + 1, legKm, stop.value_rand || null, stop.collection_amount_rand || null]
+      );
+      const tripStopId = stopResult.rows[0].id;
+
+      await client.query(
+        "UPDATE orders SET status = 'planned', trip_stop_id = $1 WHERE order_date = $2 AND customer_id = $3 AND status = 'pending'",
+        [tripStopId, date, stop.customer_id]
+      );
+      await client.query(
+        "UPDATE collections SET status = 'planned', trip_stop_id = $1 WHERE collection_date = $2 AND customer_id = $3 AND status = 'pending'",
+        [tripStopId, date, stop.customer_id]
+      );
+    }
+  });
+
+  res.json({ route: { ...updatedRoute, trip_id: tripId }, warning });
 });
