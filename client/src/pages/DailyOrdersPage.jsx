@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { isOutsideGauteng, NOT_IN_GAUTENG_LABEL } from '../lib/geo.js';
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -219,7 +220,7 @@ export default function DailyOrdersPage() {
             <tr key={c.id}>
               <td><input type="checkbox" checked={c.id in selected} onChange={(e) => toggle(c.id, e.target.checked)} /></td>
               <td>{c.name}{c.lat == null && <span className="warn"> (not geocoded)</span>}</td>
-              <td>{c.address}</td>
+              <td>{c.address}{isOutsideGauteng(c.lat, c.lng) && <span className="warn"> {NOT_IN_GAUTENG_LABEL}</span>}</td>
               <td>
                 {c.id in selected && (
                   <input type="number" value={selected[c.id]} onChange={(e) => setValue(c.id, e.target.value)} style={{ width: '100px' }} />

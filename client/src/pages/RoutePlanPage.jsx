@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { isOutsideGauteng, NOT_IN_GAUTENG_LABEL } from '../lib/geo.js';
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -266,6 +267,27 @@ export default function RoutePlanPage() {
     }
   }
 
+  // Explicit full re-sequence of one vehicle's route by the optimizer — the
+  // only action that discards the current order (moves and drag-reorders
+  // keep it), so it asks first.
+  async function optimiseRouteOrder(route) {
+    if (!window.confirm(`Re-sequence ${route.vehicle.name}'s route automatically? This replaces the current stop order, including any order you set by hand.`)) return;
+    setBusy(true);
+    setError('');
+    try {
+      const result = await api.post('/api/planning/optimise-route', { date, tripId: route.trip_id });
+      setPlan((prev) => ({
+        ...prev,
+        routes: prev.routes.map((r) => (r.trip_id === result.route.trip_id ? { ...r, ...result.route } : r)),
+      }));
+      setMoveWarning(result.warning || '');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // Drag-and-drop equivalent of the existing checkbox + "move to" pickers,
   // for a single stop at a time — same /move-stop endpoint, fromTripId
   // omitted when the stop is coming off the overflow list. Faster for one
@@ -433,6 +455,7 @@ export default function RoutePlanPage() {
                       />
                       <span title="Drag onto a vehicle below to place it">{'\u2630'}</span>
                       {o.name}
+                      {isOutsideGauteng(o.lat, o.lng) && <span className="warn"> {NOT_IN_GAUTENG_LABEL}</span>}
                       {o.value_rand > 0 && ` — deliver R${o.value_rand}`}
                       {o.collection_amount_rand > 0 && ` — collect R${o.collection_amount_rand}`}
                     </label>
@@ -481,7 +504,9 @@ export default function RoutePlanPage() {
                 {route.fuelCost != null && ` — est. fuel R${route.fuelCost.toFixed(2)}`}
               </p>
               <button onClick={() => printLoadingSheet(route, date)}>Print loading sheet</button>
-              <p className="hint">Drag a stop to reorder it within this route, or onto another vehicle to move it there.</p>
+              {' '}
+              <button onClick={() => optimiseRouteOrder(route)} disabled={busy}>Optimise order</button>
+              <p className="hint">Drag a stop to reorder it within this route, or onto another vehicle to move it there — a moved stop goes in where it adds the least distance and the rest of the order stays as it is. "Optimise order" re-sequences the whole route automatically.</p>
               <ol>
                 {route.stops.map((s, i) => {
                   const key = `${route.trip_id}-${i}`;
@@ -506,7 +531,9 @@ export default function RoutePlanPage() {
                           onChange={() => toggleStopSelected(route.trip_id, s.customer_id)}
                         />
                         <span title="Drag to reorder or move">{'\u2630'}</span>
-                        {s.name} — {s.address} ({route.legDistancesKm[i]?.toFixed(1)} km leg)
+                        {s.name} — {s.address}
+                        {isOutsideGauteng(s.lat, s.lng) && <span className="warn"> {NOT_IN_GAUTENG_LABEL}</span>}
+                        {' '}({route.legDistancesKm[i]?.toFixed(1)} km leg)
                         {s.value_rand > 0 && <span> · deliver R{s.value_rand}</span>}
                         {s.collection_amount_rand > 0 && <span> · collect R{s.collection_amount_rand}</span>}
                       </label>

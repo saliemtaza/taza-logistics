@@ -332,6 +332,44 @@ export function reorderRouteStops({ warehouse, route, orderedCustomerIds, fuelPr
 }
 
 /**
+ * Cheapest-insertion: puts `stop` into an EXISTING order at whichever gap
+ * (warehouse -> first stop, between two stops, or last stop -> warehouse)
+ * adds the least extra distance, and leaves every other stop exactly where
+ * it was. This is what a manual move uses, so moving a customer onto a
+ * vehicle slots them into the route as it stands (including any order set
+ * by hand) instead of throwing the whole route back into the optimizer.
+ */
+function insertAtCheapestPosition(warehouse, orderedCustomers, stop) {
+  if (orderedCustomers.length === 0) return [stop];
+  const loop = [warehouse, ...orderedCustomers, warehouse];
+  let bestIndex = 0;
+  let bestExtra = Infinity;
+  for (let i = 0; i < loop.length - 1; i++) {
+    const extra = haversineKm(loop[i], stop) + haversineKm(stop, loop[i + 1]) - haversineKm(loop[i], loop[i + 1]);
+    if (extra < bestExtra) {
+      bestExtra = extra;
+      bestIndex = i;
+    }
+  }
+  const next = [...orderedCustomers];
+  next.splice(bestIndex, 0, stop); // loop[i] is customers[i-1], so the gap after it is index i
+  return next;
+}
+
+/**
+ * Full re-sequence of one vehicle's route by the optimizer (direction-aware
+ * tour + 2-opt + Or-opt) — the explicit "Optimise this route" action. Same
+ * stops, new order; nothing joins or leaves. Unlike moves and manual
+ * reorders, this deliberately throws away the current order, which is why
+ * it's its own button rather than something every move does behind your back.
+ */
+export function optimiseRoute({ warehouse, route, fuelPrices, safetyMarginPct = 20, windowMinutes }) {
+  const updatedRoute = { ...route, ...costOutRoute(route.vehicle, warehouse, route.stops, fuelPrices, safetyMarginPct, windowMinutes) };
+  const warning = buildOverCapacityWarning(route.vehicle, updatedRoute);
+  return { route: updatedRoute, warning };
+}
+
+/**
  * Rank vehicles smallest to largest by payload_limit_rand — vans have a
  * concrete Rand cap, trucks are null (unlimited), which naturally sorts
  * them last without needing to hardcode vehicle_type.
@@ -706,11 +744,12 @@ function costOutRoute(vehicle, warehouse, customers, fuelPrices, safetyMarginPct
 
 /**
  * Move a single customer stop from one vehicle's route to another, and
- * re-cost both. Neither route is just appended-to — BOTH are fully
- * re-sequenced (sequenceRoute's nearest-neighbor + 2-opt), so the receiving
- * vehicle gets the stop inserted wherever it actually fits best in its
- * existing loop, and the losing vehicle's remaining stops re-optimise too,
- * since their old order was only optimal including the stop that just left.
+ * re-cost both. Order is PRESERVED on both: the receiving route keeps its
+ * current order and the moved stop goes in at the cheapest position
+ * (insertAtCheapestPosition), and the losing route keeps its order with
+ * the gap closed up. Nothing is re-sequenced by the optimizer, so a
+ * manually arranged route stays as arranged — use optimiseRoute (the
+ * "Optimise order" button) when you actually want a full re-sequence.
  *
  * This is a deliberate manual override of the automatic assignment — e.g.
  * moving a collection onto a smaller, less efficient vehicle because the
@@ -727,10 +766,10 @@ export function moveStop({ warehouse, fromRoute, toRoute, customerId, fuelPrices
   }
 
   const remainingFromStops = fromRoute.stops.filter((c) => c.customer_id !== customerId);
-  const newToStops = [...toRoute.stops, movingCustomer];
+  const newToStops = insertAtCheapestPosition(warehouse, toRoute.stops, movingCustomer);
 
-  const updatedFromRoute = { ...fromRoute, ...costOutRoute(fromRoute.vehicle, warehouse, remainingFromStops, fuelPrices, safetyMarginPct, windowMinutes) };
-  const updatedToRoute = { ...toRoute, ...costOutRoute(toRoute.vehicle, warehouse, newToStops, fuelPrices, safetyMarginPct, windowMinutes) };
+  const updatedFromRoute = { ...fromRoute, ...costOutRouteFixedOrder(fromRoute.vehicle, warehouse, remainingFromStops, fuelPrices, safetyMarginPct, windowMinutes) };
+  const updatedToRoute = { ...toRoute, ...costOutRouteFixedOrder(toRoute.vehicle, warehouse, newToStops, fuelPrices, safetyMarginPct, windowMinutes) };
 
   const warning = buildOverCapacityWarning(toRoute.vehicle, updatedToRoute);
 
@@ -746,8 +785,8 @@ export function moveStop({ warehouse, fromRoute, toRoute, customerId, fuelPrices
  * any trip yet — it came from today's overflow list, not another vehicle.
  */
 export function moveOverflowStop({ warehouse, toRoute, stop, fuelPrices, safetyMarginPct = 20, windowMinutes }) {
-  const newToStops = [...toRoute.stops, stop];
-  const updatedToRoute = { ...toRoute, ...costOutRoute(toRoute.vehicle, warehouse, newToStops, fuelPrices, safetyMarginPct, windowMinutes) };
+  const newToStops = insertAtCheapestPosition(warehouse, toRoute.stops, stop);
+  const updatedToRoute = { ...toRoute, ...costOutRouteFixedOrder(toRoute.vehicle, warehouse, newToStops, fuelPrices, safetyMarginPct, windowMinutes) };
 
   const warning = buildOverCapacityWarning(toRoute.vehicle, updatedToRoute);
 

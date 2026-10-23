@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.4.2';
+export const APP_VERSION = '1.4.3';
 
 export const CHANGELOG = [
+  {
+    version: '1.4.3',
+    date: '2026-10-23',
+    notes: 'Route Plan: moving a stop onto a vehicle now slots it in where it adds the least distance and leaves the rest of that route\'s order alone (and the vehicle it came from just closes the gap), instead of re-sequencing both routes from scratch and undoing hand-arranged order. New "Optimise order" button per vehicle re-sequences that one route automatically when you do want that. Addresses whose coordinates fall outside Gauteng now show a "not in Gauteng" flag on Today\'s Orders and the Route Plan, to catch bad geocodes (e.g. a Newlands address that landed in Cape Town).',
+  },
   {
     version: '1.4.2',
     date: '2026-10-14',
