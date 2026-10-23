@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.4.3';
+export const APP_VERSION = '1.4.4';
 
 export const CHANGELOG = [
+  {
+    version: '1.4.4',
+    date: '2026-10-23',
+    notes: 'Customers page: customers whose geocoded location is outside Gauteng now get their own "Outside Gauteng" list at the top (with Retry), and a flag next to the address in the full customer list — so a wrong-city geocode is spotted at the source instead of only once it shows up on a route.',
+  },
   {
     version: '1.4.3',
     date: '2026-10-23',

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { isOutsideGauteng, NOT_IN_GAUTENG_LABEL } from '../lib/geo.js';
 
 export default function CustomersPage() {
   const [customers, setCustomers] = useState([]);
@@ -81,6 +82,12 @@ export default function CustomersPage() {
   // auto-loop (see geocode.js), only retried one at a time, on purpose.
   const pending = customers.filter((c) => c.lat == null && !c.geocode_failed_at);
   const failed = customers.filter((c) => c.lat == null && c.geocode_failed_at);
+  // Geocoded successfully, but the coordinates landed outside Gauteng —
+  // almost certainly a wrong-city match (an address with no city/province
+  // that Google resolved to a same-named suburb elsewhere), since every
+  // customer is in Johannesburg. These look "✓ geocoded" but will wreck any
+  // route they're put on, so they get their own list.
+  const outsideGauteng = customers.filter((c) => isOutsideGauteng(c.lat, c.lng));
 
   return (
     <div className="page">
@@ -150,6 +157,28 @@ export default function CustomersPage() {
         </section>
       )}
 
+      {outsideGauteng.length > 0 && (
+        <section className="card">
+          <h3 className="error">Outside Gauteng: {outsideGauteng.length} customer(s) — check the address</h3>
+          <p className="hint">
+            These geocoded successfully, but to a location outside Gauteng — usually because the address has no
+            city or province and Google matched a same-named suburb elsewhere. Add "Johannesburg, Gauteng" to the
+            address (correct it in your customer CSV and re-upload), then Retry to geocode it again.
+          </p>
+          <table>
+            <thead><tr><th>Name</th><th>Address</th><th></th></tr></thead>
+            <tbody>
+              {outsideGauteng.map((c) => (
+                <tr key={c.id}>
+                  <td>{c.name}</td><td>{c.address}</td>
+                  <td><button onClick={() => regeocode(c.id)}>Retry</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+
       <section className="card">
         <h3>All customers ({customers.length})</h3>
         <table>
@@ -157,7 +186,8 @@ export default function CustomersPage() {
           <tbody>
             {customers.map((c) => (
               <tr key={c.id}>
-                <td>{c.code}</td><td>{c.name}</td><td>{c.address}</td>
+                <td>{c.code}</td><td>{c.name}</td>
+                <td>{c.address}{isOutsideGauteng(c.lat, c.lng) && <span className="warn"> {NOT_IN_GAUTENG_LABEL}</span>}</td>
                 <td>{c.lat != null ? '✓ geocoded' : c.geocode_failed_at ? '✗ failed' : 'pending'}</td>
               </tr>
             ))}
