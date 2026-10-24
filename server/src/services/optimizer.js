@@ -81,6 +81,18 @@ const MAX_TIER2_DETOUR_KM = 15;
  */
 const NEAR_WAREHOUSE_KM = 5;
 
+/**
+ * A vehicle only gets "first pick, anchored on the day's biggest order"
+ * treatment when it is genuinely a different class of vehicle — unlimited
+ * payload, or a payload cap at least this many times the next-largest
+ * vehicle's (e.g. the Isuzu at R150,000 vs vans at R40,000). Two vans with
+ * equal or similar caps are NOT a "truck + vans" situation: previously the
+ * tie went to whichever sorted last — the LEAST efficient van — which then
+ * filled first, took the biggest order and wandered out into the far
+ * cluster before the more efficient van got a look in.
+ */
+const PRIMARY_SIZE_RATIO = 1.5;
+
 function isNearWarehouse(warehouse, point) {
   return haversineKm(warehouse, point) <= NEAR_WAREHOUSE_KM;
 }
@@ -489,9 +501,18 @@ export function planRoutes({ orders, vehicles, warehouse, openTime, closeTime, f
   // longer/leftover driving rather than the truck grinding out extra km at
   // its worse cost-per-km.
   const bySize = rankVehiclesBySize(rankedVehicles);
-  const primaryVehicle = bySize[bySize.length - 1];
-  const restByEfficiency = rankedVehicles.filter((v) => v !== primaryVehicle);
-  const vehicleQueue = [primaryVehicle, ...restByEfficiency];
+  const largestVehicle = bySize[bySize.length - 1];
+  const capOf = (v) => (v.payload_limit_rand == null ? Infinity : v.payload_limit_rand);
+  const otherVehicles = rankedVehicles.filter((v) => v !== largestVehicle);
+  const nextLargestCap = otherVehicles.length ? Math.max(...otherVehicles.map(capOf)) : 0;
+  const largestIsDistinct = otherVehicles.length > 0
+    && (capOf(largestVehicle) === Infinity ? nextLargestCap !== Infinity : capOf(largestVehicle) >= nextLargestCap * PRIMARY_SIZE_RATIO);
+  // null when there's no genuinely bigger vehicle (e.g. two vans only) —
+  // then everyone fills in plain efficiency order, most efficient first.
+  const primaryVehicle = largestIsDistinct ? largestVehicle : null;
+  const vehicleQueue = primaryVehicle
+    ? [primaryVehicle, ...rankedVehicles.filter((v) => v !== primaryVehicle)]
+    : [...rankedVehicles];
 
   // Assign stops to vehicles by CHAINED nearest-neighbor: a single pointer
   // tracks "wherever the fleet currently is". The first vehicle starts the
@@ -599,6 +620,40 @@ export function planRoutes({ orders, vehicles, warehouse, openTime, closeTime, f
       // as anything else, and lands in overflow like any real shortfall.
     }
 
+    // Every vehicle other than a genuinely-bigger "primary" starts from the
+    // FARTHEST remaining stop (that it can actually carry and reach in
+    // time), then grows nearest-first from there as normal. With vehicles
+    // filling most-efficient first, that sends the most efficient vehicle
+    // to the far cluster (e.g. Kagiso/Azaadville) and lets it pick up
+    // near-warehouse stops on the way back — instead of a vehicle that
+    // happens to fill first claiming whatever is nearest and then drifting
+    // out into someone else's far area. The truck-style primary keeps its
+    // existing biggest-order anchor above.
+    if (vehicle !== primaryVehicle && unassigned.length > 0) {
+      const farthestFirst = [...unassigned].sort((a, b) => haversineKm(warehouse, b) - haversineKm(warehouse, a));
+      for (const seed of farthestFirst) {
+        const dist = haversineKm(warehouse, seed);
+        const legMinutes = (dist / vehicle.avg_speed_kmh) * 60;
+        const dwellMinutes = seed.avg_dwell_minutes ?? 10;
+        const returnMinutes = (haversineKm(seed, warehouse) / vehicle.avg_speed_kmh) * 60;
+        const loadMinutes = vehicle.avg_loading_minutes;
+        const paddedMinutes = (loadMinutes + legMinutes + dwellMinutes + returnMinutes) * (1 + safetyMarginPct / 100);
+        const seedFits = (vehicle.payload_limit_rand == null || seed.value_rand <= vehicle.payload_limit_rand)
+          && (vehicle.max_stops_per_day == null || vehicle.max_stops_per_day >= 1)
+          && paddedMinutes <= windowMinutes;
+        if (!seedFits) continue; // too big / too far for this vehicle — try the next-farthest
+        clusterCustomers.push(seed);
+        clusterValue = seed.value_rand;
+        runningMinutes = loadMinutes + legMinutes + dwellMinutes;
+        loadMinutesApplied = true;
+        currentPoint = seed;
+        drivePoint = seed;
+        anchorBearing = isNearWarehouse(warehouse, seed) ? null : bearingFromWarehouse(warehouse, seed);
+        unassigned.splice(unassigned.indexOf(seed), 1);
+        break;
+      }
+    }
+
     while (unassigned.length > 0) {
       // Two-tier search for this vehicle's next stop. Tier 1: only
       // candidates within ANGLE_TOLERANCE_DEG of this vehicle's own
@@ -699,6 +754,50 @@ export function planRoutes({ orders, vehicles, warehouse, openTime, closeTime, f
       pointer = currentPoint;
     }
   }
+
+  // Rescue pass for leftovers. The fill loop above deliberately refuses
+  // some stops (heading filter, MAX_TIER2_DETOUR_KM) so a vehicle doesn't
+  // wander across the city — but "refused by the planner's area rules" is
+  // not the same as "can't be delivered today". Any leftover that still
+  // fits a vehicle on its HARD limits (payload, stop cap, time window) is
+  // placed on whichever route it adds the least running cost to, falling
+  // back to starting a route on an unused vehicle only if no existing route
+  // can take it. Anything still left after that is a genuine shortfall.
+  // Each placement is reported back (with the extra km) so the dispatcher
+  // can see what was force-fitted and move it if they know better.
+  const rescued = [];
+  const leftovers = [...unassigned].sort((a, b) => b.value_rand - a.value_rand);
+  for (const stop of leftovers) {
+    let best = null; // { cluster, extraKm, extraCost }
+    for (const cluster of clusters) {
+      const v = cluster.vehicle;
+      const newValue = cluster.customers.reduce((sum, c) => sum + c.value_rand, 0) + stop.value_rand;
+      if (v.payload_limit_rand != null && newValue > v.payload_limit_rand) continue;
+      if (v.max_stops_per_day != null && cluster.customers.length + 1 > v.max_stops_per_day) continue;
+      const before = costOutRoute(v, warehouse, cluster.customers, fuelPrices, safetyMarginPct, windowMinutes);
+      const after = costOutRoute(v, warehouse, [...cluster.customers, stop], fuelPrices, safetyMarginPct, windowMinutes);
+      if (!after.fitsWindow) continue;
+      const extraKm = after.totalDistanceKm - before.totalDistanceKm;
+      const extraCost = extraKm * (Number(v.costPerKm) || 1);
+      if (!best || extraCost < best.extraCost) best = { cluster, extraKm, extraCost };
+    }
+    if (best) {
+      best.cluster.customers.push(stop);
+      rescued.push({ customer_id: stop.customer_id, name: stop.name, vehicleName: best.cluster.vehicle.name, extraKm: best.extraKm });
+      unassigned.splice(unassigned.indexOf(stop), 1);
+      continue;
+    }
+    const spareVehicle = vehicleQueue.find((v) => !clusters.some((c) => c.vehicle === v)
+      && (v.payload_limit_rand == null || stop.value_rand <= v.payload_limit_rand)
+      && (v.max_stops_per_day == null || v.max_stops_per_day >= 1)
+      && costOutRoute(v, warehouse, [stop], fuelPrices, safetyMarginPct, windowMinutes).fitsWindow);
+    if (spareVehicle) {
+      clusters.push({ vehicle: spareVehicle, customers: [stop] });
+      rescued.push({ customer_id: stop.customer_id, name: stop.name, vehicleName: spareVehicle.name, extraKm: null });
+      unassigned.splice(unassigned.indexOf(stop), 1);
+    }
+  }
+
   const overflow = [...unassigned];
 
   // Sequence each vehicle's cluster into an optimised loop and cost it out.
@@ -706,7 +805,7 @@ export function planRoutes({ orders, vehicles, warehouse, openTime, closeTime, f
     costOutRoute(vehicle, warehouse, customers, fuelPrices, safetyMarginPct, windowMinutes)
   );
 
-  return { plan, overflow, windowMinutes };
+  return { plan, overflow, windowMinutes, rescued };
 }
 
 /**

@@ -145,7 +145,7 @@ planningRouter.post('/generate', async (req, res) => {
 
   const fuelPrices = await loadFuelPrices();
 
-  const { plan, overflow, windowMinutes } = planRoutes({
+  const { plan, overflow, windowMinutes, rescued = [] } = planRoutes({
     orders: stops,
     vehicles,
     warehouse,
@@ -173,6 +173,16 @@ planningRouter.post('/generate', async (req, res) => {
   // keep the straight-line estimate and flag it rather than failing the
   // whole plan.
   const refinementWarnings = [];
+  // Leftovers the area rules refused but that still fit a vehicle's hard
+  // limits — placed anyway (see planRoutes' rescue pass). Surfaced here so
+  // a forced detour is visible, never silent.
+  for (const r of rescued) {
+    refinementWarnings.push(
+      r.extraKm == null
+        ? `${r.name}: didn't fit any running route, so ${r.vehicleName} was added just for this stop.`
+        : `${r.name}: outside the usual area of the other routes — placed on ${r.vehicleName} anyway (adds about ${r.extraKm.toFixed(1)} km). Move it if you know a better fit.`
+    );
+  }
   if (useRoadRouting) {
     for (const route of plan) {
       if (route.stops.length === 0) continue;
@@ -272,7 +282,7 @@ planningRouter.post('/generate', async (req, res) => {
     date,
     routes: [...frozenRoutes, ...plan],
     overflow: overflow.map((s) => ({
-      customer_id: s.customer_id, name: s.name,
+      customer_id: s.customer_id, name: s.name, address: s.address, lat: s.lat, lng: s.lng,
       value_rand: s.value_rand, collection_amount_rand: s.collection_amount_rand,
     })),
     warnings: refinementWarnings,

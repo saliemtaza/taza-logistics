@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.4.4';
+export const APP_VERSION = '1.4.5';
 
 export const CHANGELOG = [
+  {
+    version: '1.4.5',
+    date: '2026-10-23',
+    notes: 'Route planning: with two similar vans, the more efficient one now fills first and starts from the farthest remaining stop (e.g. the Kagiso/Azaadville cluster), picking up near-warehouse stops on the way back, instead of the less efficient van filling first and wandering out into the far area. A genuinely bigger vehicle (e.g. the Isuzu) still goes first as before. Stops the area rules would have dropped to "Could not fit today" are now placed on whichever route they add the least distance to, as long as payload, stop cap and time allow — with a warning showing the extra km — and only a real limit leaves a stop in overflow. Overflow stops now carry their address and location, so the "not in Gauteng" flag works there too.',
+  },
   {
     version: '1.4.4',
     date: '2026-10-23',
