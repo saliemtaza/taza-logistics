@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.4.5';
+export const APP_VERSION = '1.4.6';
 
 export const CHANGELOG = [
+  {
+    version: '1.4.6',
+    date: '2026-10-27',
+    notes: 'Cash collections no longer need an amount — a collection is there to fit the customer into the route, so the Collections page now just ticks customers (no value field), and a collections CSV only needs a code or name. Stops with a collection but no amount show "cash collection" on the Route Plan and "Collect cash" on the driver screen. Collections list also shows the "not geocoded" and "not in Gauteng" flags next to customers.',
+  },
   {
     version: '1.4.5',
     date: '2026-10-23',

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { isOutsideGauteng, NOT_IN_GAUTENG_LABEL } from '../lib/geo.js';
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -8,7 +9,10 @@ function todayStr() {
 export default function CollectionsPage() {
   const [date, setDate] = useState(todayStr());
   const [customers, setCustomers] = useState([]);
-  const [selected, setSelected] = useState({}); // customer_id -> amount_due_rand string
+  // customer_id -> true. Only WHICH customers have a collection today matters —
+  // the collection is there to fit the stop into the route, so no amount is
+  // captured (it's stored as 0).
+  const [selected, setSelected] = useState({});
   const [search, setSearch] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
@@ -20,7 +24,7 @@ export default function CollectionsPage() {
   useEffect(() => {
     api.get(`/api/collections?date=${date}`).then((rows) => {
       const map = {};
-      for (const r of rows) map[r.customer_id] = String(r.amount_due_rand);
+      for (const r of rows) map[r.customer_id] = true;
       setSelected(map);
     });
   }, [date]);
@@ -28,19 +32,15 @@ export default function CollectionsPage() {
   function toggle(customerId, checked) {
     setSelected((prev) => {
       const next = { ...prev };
-      if (checked) next[customerId] = next[customerId] || '';
+      if (checked) next[customerId] = true;
       else delete next[customerId];
       return next;
     });
   }
-  function setValue(customerId, value) {
-    setSelected((prev) => ({ ...prev, [customerId]: value }));
-  }
 
   async function save() {
-    const collections = Object.entries(selected)
-      .filter(([, v]) => v !== '' && !isNaN(parseFloat(v)))
-      .map(([customer_id, amount_due_rand]) => ({ customer_id: parseInt(customer_id, 10), amount_due_rand: parseFloat(amount_due_rand) }));
+    const collections = Object.keys(selected)
+      .map((customer_id) => ({ customer_id: parseInt(customer_id, 10), amount_due_rand: 0 }));
 
     setMessage('Saving...');
     const res = await api.post('/api/collections', { date, collections });
@@ -56,7 +56,7 @@ export default function CollectionsPage() {
       setMessage(`Uploaded: ${result.inserted} collection(s) matched.${result.notFound.length ? ` ${result.notFound.length} customer(s) not found: ${result.notFound.join(', ')}` : ''}`);
       const rows = await api.get(`/api/collections?date=${date}`);
       const map = {};
-      for (const r of rows) map[r.customer_id] = String(r.amount_due_rand);
+      for (const r of rows) map[r.customer_id] = true;
       setSelected(map);
     } catch (err) {
       setMessage(`Error: ${err.message}`);
@@ -76,40 +76,34 @@ export default function CollectionsPage() {
     return c.name.toLowerCase().startsWith(search.toLowerCase());
   });
   const selectedCount = Object.keys(selected).length;
-  const totalDue = Object.values(selected).reduce((s, v) => s + (parseFloat(v) || 0), 0);
 
   return (
     <div className="page">
       <h2>Cash collections</h2>
       <p className="hint">
-        Customers here don't need an order today — this is purely cash owed that falls on today's
-        route. A customer with both a delivery and a collection gets visited once; the driver sees both
-        amounts at that stop.
+        Customers here don't need an order today — ticking one just adds a cash-collection stop to
+        today's route. No amount is needed; the collection is only here so the stop gets fitted into the
+        route. A customer with both a delivery and a collection gets visited once.
       </p>
 
       <section className="card">
         <div className="row">
           <label>Date <input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
-          <label>Upload a collections list (CSV: code/name, amount_due_rand)
+          <label>Upload a collections list (CSV: code or name — no amount needed)
             <input type="file" accept=".csv" onChange={handleUpload} disabled={busy} />
           </label>
         </div>
-        <p className="hint">{selectedCount} customer(s) selected — R{totalDue.toFixed(2)} total due for {date}.</p>
+        <p className="hint">{selectedCount} customer(s) with a cash collection on {date}.</p>
 
         <input placeholder="Search customers by name..." value={search} onChange={(e) => setSearch(e.target.value)} />
         <table>
-          <thead><tr><th></th><th>Customer</th><th>Address</th><th>Amount due (R)</th></tr></thead>
+          <thead><tr><th></th><th>Customer</th><th>Address</th></tr></thead>
           <tbody>
             {filtered.map((c) => (
               <tr key={c.id}>
                 <td><input type="checkbox" checked={c.id in selected} onChange={(e) => toggle(c.id, e.target.checked)} /></td>
-                <td>{c.name}</td>
-                <td>{c.address}</td>
-                <td>
-                  {c.id in selected && (
-                    <input type="number" value={selected[c.id]} onChange={(e) => setValue(c.id, e.target.value)} style={{ width: '100px' }} />
-                  )}
-                </td>
+                <td>{c.name}{c.lat == null && <span className="warn"> (not geocoded)</span>}</td>
+                <td>{c.address}{isOutsideGauteng(c.lat, c.lng) && <span className="warn"> {NOT_IN_GAUTENG_LABEL}</span>}</td>
               </tr>
             ))}
           </tbody>

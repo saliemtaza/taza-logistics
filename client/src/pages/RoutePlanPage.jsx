@@ -457,7 +457,7 @@ export default function RoutePlanPage() {
                       {o.name}
                       {isOutsideGauteng(o.lat, o.lng) && <span className="warn"> {NOT_IN_GAUTENG_LABEL}</span>}
                       {o.value_rand > 0 && ` — deliver R${o.value_rand}`}
-                      {o.collection_amount_rand > 0 && ` — collect R${o.collection_amount_rand}`}
+                      {o.collection_amount_rand > 0 ? ` — collect R${o.collection_amount_rand}` : (o.has_collection && ' — cash collection')}
                     </label>
                   </li>
                 ))}
@@ -535,7 +535,9 @@ export default function RoutePlanPage() {
                         {isOutsideGauteng(s.lat, s.lng) && <span className="warn"> {NOT_IN_GAUTENG_LABEL}</span>}
                         {' '}({route.legDistancesKm[i]?.toFixed(1)} km leg)
                         {s.value_rand > 0 && <span> · deliver R{s.value_rand}</span>}
-                        {s.collection_amount_rand > 0 && <span> · collect R{s.collection_amount_rand}</span>}
+                        {s.collection_amount_rand > 0
+                          ? <span> · collect R{s.collection_amount_rand}</span>
+                          : (s.has_collection && <span> · cash collection</span>)}
                       </label>
                     </li>
                   );

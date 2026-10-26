@@ -26,7 +26,8 @@ planningRouter.get('/:date', async (req, res) => {
   const full = await Promise.all(trips.map(async (trip) => ({
     ...trip,
     stops: await query(`
-      SELECT ts.*, c.name AS customer_name, c.address
+      SELECT ts.*, c.name AS customer_name, c.address,
+             EXISTS (SELECT 1 FROM collections cl WHERE cl.trip_stop_id = ts.id) AS has_collection
       FROM trip_stops ts JOIN customers c ON c.id = ts.customer_id
       WHERE ts.trip_id = $1 ORDER BY ts.seq
     `, [trip.id]),
@@ -104,7 +105,7 @@ planningRouter.post('/generate', async (req, res) => {
       stop = {
         customer_id: row.customer_id, name: row.name, address: row.address,
         lat: row.lat, lng: row.lng, avg_dwell_minutes: row.avg_dwell_minutes,
-        value_rand: 0, collection_amount_rand: 0, order_ids: [], collection_ids: [],
+        value_rand: 0, collection_amount_rand: 0, has_collection: false, order_ids: [], collection_ids: [],
       };
       stopMap.set(row.customer_id, stop);
     }
@@ -117,7 +118,10 @@ planningRouter.post('/generate', async (req, res) => {
   }
   for (const c of collectionRows) {
     const stop = getOrCreateStop(c);
-    stop.collection_amount_rand += parseFloat(c.amount_due_rand);
+    // The amount is optional (a collection exists to fit the stop into the
+    // route) — a missing/blank amount counts as 0, never NaN.
+    stop.collection_amount_rand += parseFloat(c.amount_due_rand) || 0;
+    stop.has_collection = true;
     stop.collection_ids.push(c.collection_id);
   }
   const stops = [...stopMap.values()];
@@ -283,7 +287,7 @@ planningRouter.post('/generate', async (req, res) => {
     routes: [...frozenRoutes, ...plan],
     overflow: overflow.map((s) => ({
       customer_id: s.customer_id, name: s.name, address: s.address, lat: s.lat, lng: s.lng,
-      value_rand: s.value_rand, collection_amount_rand: s.collection_amount_rand,
+      value_rand: s.value_rand, collection_amount_rand: s.collection_amount_rand, has_collection: s.has_collection,
     })),
     warnings: refinementWarnings,
   });
@@ -301,7 +305,8 @@ async function loadFrozenRouteSummary(tripId, rankedById) {
 
   const stopRows = await query(`
     SELECT ts.customer_id, ts.leg_distance_km, ts.delivery_value_rand, ts.collection_amount_rand,
-           c.name, c.address
+           c.name, c.address,
+           EXISTS (SELECT 1 FROM collections cl WHERE cl.trip_stop_id = ts.id) AS has_collection
     FROM trip_stops ts JOIN customers c ON c.id = ts.customer_id
     WHERE ts.trip_id = $1 ORDER BY ts.seq
   `, [tripId]);
@@ -309,6 +314,7 @@ async function loadFrozenRouteSummary(tripId, rankedById) {
     customer_id: r.customer_id, name: r.name, address: r.address,
     value_rand: parseFloat(r.delivery_value_rand || 0),
     collection_amount_rand: parseFloat(r.collection_amount_rand || 0),
+    has_collection: !!r.has_collection,
   }));
 
   return {
@@ -333,7 +339,8 @@ async function loadTripWithVehicleAndStops(tripId) {
   const vehicle = vehicleRows[0];
   const stopRows = await query(`
     SELECT ts.customer_id, ts.delivery_value_rand, ts.collection_amount_rand,
-           c.name, c.address, c.lat, c.lng, c.avg_dwell_minutes
+           c.name, c.address, c.lat, c.lng, c.avg_dwell_minutes,
+           EXISTS (SELECT 1 FROM collections cl WHERE cl.trip_stop_id = ts.id) AS has_collection
     FROM trip_stops ts JOIN customers c ON c.id = ts.customer_id
     WHERE ts.trip_id = $1 ORDER BY ts.seq
   `, [tripId]);
@@ -342,6 +349,7 @@ async function loadTripWithVehicleAndStops(tripId) {
     lat: r.lat, lng: r.lng, avg_dwell_minutes: r.avg_dwell_minutes,
     value_rand: parseFloat(r.delivery_value_rand || 0),
     collection_amount_rand: parseFloat(r.collection_amount_rand || 0),
+    has_collection: !!r.has_collection,
   }));
   return { trip_id: trip.id, trip_date: trip.trip_date, vehicle, stops };
 }
@@ -368,10 +376,10 @@ async function loadUnassignedStopForCustomer(date, customerId) {
   const stop = {
     customer_id: customerId, name: base.name, address: base.address,
     lat: base.lat, lng: base.lng, avg_dwell_minutes: base.avg_dwell_minutes,
-    value_rand: 0, collection_amount_rand: 0,
+    value_rand: 0, collection_amount_rand: 0, has_collection: collectionRows.length > 0,
   };
   for (const o of orderRows) stop.value_rand += parseFloat(o.value_rand);
-  for (const c of collectionRows) stop.collection_amount_rand += parseFloat(c.amount_due_rand);
+  for (const c of collectionRows) stop.collection_amount_rand += parseFloat(c.amount_due_rand) || 0;
   return stop;
 }
 

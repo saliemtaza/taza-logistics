@@ -19,7 +19,10 @@ collectionsRouter.get('/', async (req, res) => {
   res.json(collections);
 });
 
-// Body: { date: 'YYYY-MM-DD', collections: [{ customer_id, amount_due_rand }] }
+// Body: { date: 'YYYY-MM-DD', collections: [{ customer_id, amount_due_rand? }] }
+// The amount is optional and defaults to 0: a collection is on the list so
+// the customer gets fitted into the route, and the Rand value plays no part
+// in routing (it never counts toward a vehicle's payload cap).
 collectionsRouter.post('/', async (req, res) => {
   const { date, collections } = req.body;
   if (!date || !Array.isArray(collections)) {
@@ -33,7 +36,8 @@ collectionsRouter.post('/', async (req, res) => {
     // next time a route is generated.
     await client.query("DELETE FROM collections WHERE collection_date = $1 AND status != 'collected'", [date]);
     for (const c of collections) {
-      await client.query('INSERT INTO collections (customer_id, collection_date, amount_due_rand) VALUES ($1, $2, $3)', [c.customer_id, date, c.amount_due_rand]);
+      const amount = Number(c.amount_due_rand);
+      await client.query('INSERT INTO collections (customer_id, collection_date, amount_due_rand) VALUES ($1, $2, $3)', [c.customer_id, date, Number.isFinite(amount) ? amount : 0]);
     }
   });
 
@@ -41,8 +45,9 @@ collectionsRouter.post('/', async (req, res) => {
 });
 
 // CSV upload: columns `code` or `name` (matched against the customer
-// database, same as customer sync) and `amount_due_rand`. Form field `date`
-// required alongside the file.
+// database, same as customer sync). An `amount_due_rand` column is optional
+// and ignored if absent (stored as 0). Form field `date` required alongside
+// the file.
 collectionsRouter.post('/upload', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const { date } = req.body;
@@ -62,13 +67,16 @@ collectionsRouter.post('/upload', upload.single('file'), async (req, res) => {
     await client.query("DELETE FROM collections WHERE collection_date = $1 AND status != 'collected'", [date]);
     for (const row of records) {
       const code = row.code || row.Code || null;
-      const name = row.name || row.Name;
-      const amount = parseFloat(row.amount_due_rand || row.amount || row.Amount);
-      if (!amount) continue;
+      const name = row.name || row.Name || row['Customer Name'];
+      // Rows are kept even with no amount — the amount is optional now.
+      // Rows with neither a code nor a name (blank/totals lines) are skipped.
+      if (!code && !String(name ?? '').trim()) continue;
+      const parsedAmount = parseFloat(String(row.amount_due_rand ?? row.amount ?? row.Amount ?? '').replace(/[R,\s"]/g, ''));
+      const amount = Number.isFinite(parsedAmount) ? parsedAmount : 0;
 
       const customerResult = code
         ? await client.query('SELECT id FROM customers WHERE code = $1', [code])
-        : await client.query('SELECT id FROM customers WHERE name = $1', [name]);
+        : await client.query('SELECT id FROM customers WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))', [name]);
       const customer = customerResult.rows[0];
       if (!customer) { notFound.push(code || name); continue; }
 

@@ -223,7 +223,9 @@ export default function FieldPage() {
                     <strong>{stop.customer_name}</strong> — {stop.address}
                     <div className="hint">
                       {stop.delivery_value_rand > 0 && <span>Deliver R{stop.delivery_value_rand} </span>}
-                      {stop.collection_amount_rand > 0 && <span>· Collect R{stop.collection_amount_rand} cash</span>}
+                      {stop.collection_amount_rand > 0
+                        ? <span>· Collect R{stop.collection_amount_rand} cash</span>
+                        : (stop.has_collection && <span>· Collect cash</span>)}
                     </div>
                     <div className="row">
                       {!stop.arrived_at ? (
