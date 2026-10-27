@@ -236,6 +236,105 @@ function orOptImprove(tour, matrix, maxIterations = 100) {
 }
 
 /**
+ * Grouping tie-break. 2-opt/Or-opt minimise total straight-line distance
+ * only, so when two orders are nearly equal in length they can pick the one
+ * that leaves an area and comes back to it later (e.g. one Kensington stop
+ * visited early, the other last) over the one that finishes the area first.
+ * This pass takes the already-optimised tour and looks for moves that cut
+ * the number of such "return visits" to an area, accepting one only if the
+ * tour stays within a small tolerance of the optimised length — always
+ * measured against the ORIGINAL optimised length, so repeated moves can't
+ * add up to a real detour. Areas are groups of stops chained together by
+ * gaps of GROUP_LINK_KM or less. The warehouse endpoints never move.
+ */
+const GROUP_LINK_KM = 2;
+const GROUP_TOLERANCE_KM = 0.5;
+const GROUP_TOLERANCE_PCT = 0.015;
+
+function areaLabels(matrix) {
+  const n = matrix.length;
+  const label = new Array(n).fill(-1); // index 0 is the warehouse, ignored
+  let next = 0;
+  for (let s = 1; s < n; s++) {
+    if (label[s] !== -1) continue;
+    label[s] = next;
+    const stack = [s];
+    while (stack.length) {
+      const a = stack.pop();
+      for (let b = 1; b < n; b++) {
+        if (label[b] === -1 && matrix[a][b] <= GROUP_LINK_KM) { label[b] = next; stack.push(b); }
+      }
+    }
+    next += 1;
+  }
+  return label;
+}
+
+/** How many times the tour re-enters an area it has already left. */
+function returnVisits(tour, label) {
+  const seen = new Set();
+  let extra = 0;
+  let prev = -1;
+  for (let i = 1; i < tour.length - 1; i++) {
+    const l = label[tour[i]];
+    if (l !== prev) {
+      if (seen.has(l)) extra += 1;
+      seen.add(l);
+      prev = l;
+    }
+  }
+  return extra;
+}
+
+function groupingImprove(tour, matrix) {
+  const label = areaLabels(matrix);
+  const baseLength = tourLength(tour, matrix);
+  const limit = baseLength + Math.max(GROUP_TOLERANCE_KM, GROUP_TOLERANCE_PCT * baseLength);
+  let best = [...tour];
+  let bestExtra = returnVisits(best, label);
+
+  for (let iter = 0; iter < 50 && bestExtra > 0; iter++) {
+    let pick = null;
+    let pickExtra = bestExtra;
+    let pickLength = Infinity;
+    const consider = (candidate) => {
+      const length = tourLength(candidate, matrix);
+      if (length > limit + 1e-9) return;
+      const extra = returnVisits(candidate, label);
+      if (extra < pickExtra || (extra === pickExtra && pick && length < pickLength)) {
+        pick = candidate; pickExtra = extra; pickLength = length;
+      }
+    };
+    const m = best.length - 2; // customers sit at indices 1..m
+
+    // Relocate a run of 1-3 stops (either direction) to any other position.
+    for (let segLen = 1; segLen <= 3 && segLen <= m; segLen++) {
+      for (let i = 1; i + segLen - 1 <= m; i++) {
+        const seg = best.slice(i, i + segLen);
+        const rest = [...best.slice(0, i), ...best.slice(i + segLen)];
+        for (let j = 1; j < rest.length; j++) {
+          for (const rev of [false, true]) {
+            if (j === i && !rev) continue;
+            consider([...rest.slice(0, j), ...(rev ? [...seg].reverse() : seg), ...rest.slice(j)]);
+          }
+        }
+      }
+    }
+    // Reverse any stretch of the route.
+    for (let i = 1; i < m; i++) {
+      for (let j = i + 1; j <= m; j++) {
+        consider([...best.slice(0, i), ...best.slice(i, j + 1).reverse(), ...best.slice(j + 1)]);
+      }
+    }
+
+    if (!pick || pickExtra >= bestExtra) break;
+    best = pick;
+    bestExtra = pickExtra;
+  }
+  return best;
+}
+
+/**
  * Sequence one vehicle's stops into an optimised warehouse -> ... -> warehouse
  * loop. Returns ordered customer list + per-leg distances (km, straight-line).
  */
@@ -249,6 +348,7 @@ export function sequenceRoute(warehouse, customers) {
   tour.push(0); // return to warehouse
   tour = twoOptImprove(tour, matrix);
   tour = orOptImprove(tour, matrix);
+  tour = groupingImprove(tour, matrix); // prefer finishing an area before leaving it, within a small distance tolerance
   // twoOptImprove preserves endpoints (index 0 fixed as start), re-close the loop:
   if (tour[tour.length - 1] !== 0) tour.push(0);
 

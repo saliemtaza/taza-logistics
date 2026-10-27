@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.4.8';
+export const APP_VERSION = '1.4.9';
 
 export const CHANGELOG = [
+  {
+    version: '1.4.9',
+    date: '2026-10-27',
+    notes: 'Route sequencing now prefers finishing an area before leaving it. Two stop orders that are almost the same length used to be a coin toss, so a route could visit one stop in an area early and come back to its neighbour at the end (e.g. Kensington split in two). A small tie-break now picks the grouped order whenever it costs no more than about half a kilometre (or 1.5% of the route, whichever is larger). Applies to Generate and "Optimise order"; manual moves and drag-reorders are unchanged.',
+  },
   {
     version: '1.4.8',
     date: '2026-10-27',
