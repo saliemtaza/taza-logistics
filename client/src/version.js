@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.4.7';
+export const APP_VERSION = '1.4.8';
 
 export const CHANGELOG = [
+  {
+    version: '1.4.8',
+    date: '2026-10-27',
+    notes: 'Route Plan: every available vehicle is now a valid place to move stops to, even one the planner gave no stops (previously the "move to" picker only appeared when two or more vehicles had routes, so a day where everything landed on the Isuzu offered no way to move stops onto the Steed or Sailor). A vehicle with no stops shows as "no stops yet" and can also be dragged onto; its trip is created when the first stop lands on it. Each vehicle now shows its estimated return time, with a warning (never a limit) when it is estimated to be back after 16:30.',
+  },
   {
     version: '1.4.7',
     date: '2026-10-27',
