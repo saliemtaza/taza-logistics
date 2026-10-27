@@ -290,6 +290,10 @@ planningRouter.post('/generate', async (req, res) => {
       value_rand: s.value_rand, collection_amount_rand: s.collection_amount_rand, has_collection: s.has_collection,
     })),
     warnings: refinementWarnings,
+    // Used by the Route Plan page to show each vehicle's estimated return
+    // time and warn when it is past backBy. Warning only, never a planner limit.
+    openTime: settings.open_time || '08:00',
+    backBy: '16:30',
   });
 });
 
@@ -394,9 +398,9 @@ async function loadUnassignedStopForCustomer(date, customerId) {
 // overflow (unassigned) list instead — it was never on any trip, so only
 // the destination trip is touched (see moveOverflowStop).
 planningRouter.post('/move-stop', async (req, res) => {
-  const { date, fromTripId, toTripId, customerId } = req.body;
-  if (!date || !toTripId || !customerId) {
-    return res.status(400).json({ error: 'date, toTripId and customerId are required' });
+  const { date, fromTripId, toTripId, toVehicleId, customerId } = req.body;
+  if (!date || (!toTripId && !toVehicleId) || !customerId) {
+    return res.status(400).json({ error: 'date, customerId and either toTripId or toVehicleId are required' });
   }
 
   const settings = await loadSettings();
@@ -420,9 +424,29 @@ planningRouter.post('/move-stop', async (req, res) => {
   const todaysVehicles = allActiveVehicles.filter((v) => !unavailableIds.has(v.id));
   const rankedById = new Map(rankVehiclesByEfficiency(todaysVehicles, fuelPrices).map((v) => [v.id, v]));
 
-  const toRoute = await loadTripWithVehicleAndStops(toTripId);
-  if (!toRoute) {
-    return res.status(404).json({ error: 'That trip could not be found \u2014 the plan may have been regenerated since you loaded this page.' });
+  // Destination: an existing trip, or (toVehicleId only) a vehicle that has
+  // no trip today yet — then an empty placeholder route is used and the
+  // trip row is only created inside the persist transaction below, so a
+  // failed move never leaves an empty trip behind.
+  let toRoute;
+  let createTripForVehicleId = null;
+  if (toTripId) {
+    toRoute = await loadTripWithVehicleAndStops(toTripId);
+    if (!toRoute) {
+      return res.status(404).json({ error: 'That trip could not be found \u2014 the plan may have been regenerated since you loaded this page.' });
+    }
+  } else {
+    const existingTrip = await query('SELECT id FROM trips WHERE trip_date = $1 AND vehicle_id = $2', [date, toVehicleId]);
+    if (existingTrip[0]) {
+      toRoute = await loadTripWithVehicleAndStops(existingTrip[0].id);
+    } else {
+      const vehicle = todaysVehicles.find((v) => String(v.id) === String(toVehicleId));
+      if (!vehicle) {
+        return res.status(400).json({ error: 'That vehicle is not available for this date.' });
+      }
+      toRoute = { trip_id: null, trip_date: date, vehicle, stops: [] };
+      createTripForVehicleId = vehicle.id;
+    }
   }
   toRoute.vehicle = rankedById.get(toRoute.vehicle.id) || toRoute.vehicle;
 
@@ -456,6 +480,14 @@ planningRouter.post('/move-stop', async (req, res) => {
   }
 
   await withTransaction(async (client) => {
+    if (createTripForVehicleId != null) {
+      const created = await client.query(
+        `INSERT INTO trips (trip_date, vehicle_id, planned_distance_km, planned_duration_min, planned_fuel_litres, planned_fuel_cost_rand, reversed, status)
+         VALUES ($1, $2, $3, $4, $5, $6, false, 'planned') RETURNING id`,
+        [date, createTripForVehicleId, updatedToRoute.totalDistanceKm ?? 0, updatedToRoute.totalDurationMin ?? 0, updatedToRoute.fuelLitres ?? null, updatedToRoute.fuelCost ?? null]
+      );
+      updatedToRoute.trip_id = created.rows[0].id;
+    }
     for (const route of routesToPersist) {
       await client.query(
         "UPDATE orders SET status = 'pending', trip_stop_id = NULL WHERE trip_stop_id IN (SELECT id FROM trip_stops WHERE trip_id = $1)",

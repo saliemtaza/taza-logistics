@@ -2,6 +2,34 @@ import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { isOutsideGauteng, NOT_IN_GAUTENG_LABEL } from '../lib/geo.js';
 
+// Every vehicle must be back at the warehouse by this time. Only ever a
+// warning on the route plan — it never restricts what the planner does.
+const BACK_BY = '16:30';
+
+function clockToMin(hhmm) {
+  const [h, m] = String(hhmm).split(':').map(Number);
+  return h * 60 + (m || 0);
+}
+function minToClock(min) {
+  const m = Math.round(min);
+  return `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+
+// Replaces the matching route in a routes array with an updated one, or
+// appends it if it's new (a vehicle that had no trip until a stop was moved
+// onto it). Matches by trip_id, or by vehicle for a not-yet-created trip.
+function applyRouteUpdate(routes, updated) {
+  if (!updated) return routes;
+  let matched = false;
+  const next = routes.map((r) => {
+    const sameTrip = updated.trip_id != null && r.trip_id === updated.trip_id;
+    const sameIdleVehicle = r.trip_id == null && r.vehicle?.id === updated.vehicle?.id;
+    if (sameTrip || sameIdleVehicle) { matched = true; return { ...r, ...updated }; }
+    return r;
+  });
+  return matched ? next : [...next, updated];
+}
+
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -172,7 +200,7 @@ export default function RoutePlanPage() {
   // always reloads the current trip state from the DB, so calling it
   // sequentially for several customers is safe, it just shows as one bulk
   // action from the user's side instead of repeating the picker per stop.
-  async function moveSelectedStopsTo(fromRoute, toRoute) {
+  async function moveSelectedStopsTo(fromRoute, toRoute) {  // toRoute may be an idle vehicle (trip_id null) — the server creates its trip
     const customerIds = selectedStops[fromRoute.trip_id] || [];
     if (customerIds.length === 0) return;
     setBusy(true);
@@ -183,17 +211,16 @@ export default function RoutePlanPage() {
         const result = await api.post('/api/planning/move-stop', {
           date,
           fromTripId: fromRoute.trip_id,
-          toTripId: toRoute.trip_id,
+          toTripId: toRoute.trip_id ?? undefined,
+          toVehicleId: toRoute.vehicle.id,
           customerId,
         });
         setPlan((prev) => ({
           ...prev,
-          routes: prev.routes.map((r) => {
-            if (r.trip_id === result.fromRoute.trip_id) return { ...r, ...result.fromRoute };
-            if (r.trip_id === result.toRoute.trip_id) return { ...r, ...result.toRoute };
-            return r;
-          }),
+          routes: applyRouteUpdate(applyRouteUpdate(prev.routes, result.fromRoute), result.toRoute),
         }));
+        // Later stops in this same batch must target the trip that now exists.
+        if (toRoute.trip_id == null) toRoute = { ...toRoute, trip_id: result.toRoute.trip_id };
         if (result.warning) latestWarning = result.warning;
       }
       setMoveWarning(latestWarning);
@@ -225,14 +252,16 @@ export default function RoutePlanPage() {
       for (const customerId of selectedOverflow) {
         const result = await api.post('/api/planning/move-stop', {
           date,
-          toTripId: toRoute.trip_id,
+          toTripId: toRoute.trip_id ?? undefined,
+          toVehicleId: toRoute.vehicle.id,
           customerId,
         });
         setPlan((prev) => ({
           ...prev,
           overflow: prev.overflow.filter((o) => o.customer_id !== customerId),
-          routes: prev.routes.map((r) => (r.trip_id === result.toRoute.trip_id ? { ...r, ...result.toRoute } : r)),
+          routes: applyRouteUpdate(prev.routes, result.toRoute),
         }));
+        if (toRoute.trip_id == null) toRoute = { ...toRoute, trip_id: result.toRoute.trip_id };
         if (result.warning) latestWarning = result.warning;
       }
       setMoveWarning(latestWarning);
@@ -292,21 +321,17 @@ export default function RoutePlanPage() {
   // for a single stop at a time — same /move-stop endpoint, fromTripId
   // omitted when the stop is coming off the overflow list. Faster for one
   // stop; the checkbox flow above still covers moving several at once.
-  async function moveSingleStop(fromTripId, toTripId, customerId) {
+  async function moveSingleStop(fromTripId, target, customerId) {
     setBusy(true);
     setError('');
     try {
-      const body = { date, toTripId, customerId };
+      const body = { date, toTripId: target.trip_id ?? undefined, toVehicleId: target.vehicle.id, customerId };
       if (fromTripId != null) body.fromTripId = fromTripId;
       const result = await api.post('/api/planning/move-stop', body);
       setPlan((prev) => ({
         ...prev,
         overflow: fromTripId == null ? prev.overflow.filter((o) => o.customer_id !== customerId) : prev.overflow,
-        routes: prev.routes.map((r) => {
-          if (result.fromRoute && r.trip_id === result.fromRoute.trip_id) return { ...r, ...result.fromRoute };
-          if (r.trip_id === result.toRoute.trip_id) return { ...r, ...result.toRoute };
-          return r;
-        }),
+        routes: applyRouteUpdate(applyRouteUpdate(prev.routes, result.fromRoute), result.toRoute),
       }));
       setMoveWarning(result.warning || '');
     } catch (err) {
@@ -358,7 +383,7 @@ export default function RoutePlanPage() {
         next.splice(insertAt, 0, customerId);
         reorderWithinRoute(route, next);
       } else {
-        moveSingleStop(fromTripId, route.trip_id, customerId);
+        moveSingleStop(fromTripId, route, customerId);
       }
     };
   }
@@ -373,10 +398,25 @@ export default function RoutePlanPage() {
       if (!dragging || busy) return;
       const { fromTripId, customerId } = dragging;
       setDragging(null);
-      if (fromTripId === route.trip_id) return;
-      moveSingleStop(fromTripId, route.trip_id, customerId);
+      if (route.trip_id != null && fromTripId === route.trip_id) return;
+      moveSingleStop(fromTripId, route, customerId);
     };
   }
+
+  // Routes that exist as real trips, plus one placeholder per available
+  // vehicle that has no trip yet (it got no stops from the planner) — so
+  // an unused vehicle is always a valid place to move or drag a stop to.
+  // Its trip is only created server-side when the first stop lands on it.
+  const shownRoutes = plan ? plan.routes.filter((r) => r.trip_id != null) : [];
+  const idleVehicles = plan
+    ? vehicles
+        .filter((v) => !unavailable[v.id] && !shownRoutes.some((r) => r.vehicle?.id === v.id))
+        .map((v) => ({
+          trip_id: null, idle: true, vehicle: { id: v.id, name: v.name }, stops: [], legDistancesKm: [],
+          totalDistanceKm: 0, totalDurationMin: 0, totalValueRand: 0, fuelCost: null, fitsWindow: true,
+        }))
+    : [];
+  const allTargets = [...shownRoutes, ...idleVehicles];
 
   const totalCost = plan?.routes.reduce((s, r) => s + (r.fuelCost || 0), 0);
   const totalKm = plan?.routes.reduce((s, r) => s + r.totalDistanceKm, 0);
@@ -429,8 +469,8 @@ export default function RoutePlanPage() {
             </p>
           )}
 
-          {plan.routes.length > 1 && (
-            <button onClick={() => printAllLoadingSheets(plan.routes, date)}>Print all loading sheets</button>
+          {shownRoutes.length > 1 && (
+            <button onClick={() => printAllLoadingSheets(shownRoutes, date)}>Print all loading sheets</button>
           )}
 
 
@@ -463,21 +503,21 @@ export default function RoutePlanPage() {
                 ))}
               </ul>
               <p className="hint">These didn't fit within the fleet's capacity/time window. Consider a second wave, marking another vehicle available, or adding a vehicle.</p>
-              {plan.routes.length > 0 && selectedOverflow.length > 0 && (
+              {allTargets.length > 0 && selectedOverflow.length > 0 && (
                 <div className="row" style={{ alignItems: 'center', gap: '0.5em' }}>
                   <span className="hint">{selectedOverflow.length} selected — move to:</span>
                   <select
                     disabled={busy}
                     defaultValue=""
                     onChange={(e) => {
-                      const target = plan.routes.find((r) => String(r.trip_id) === e.target.value);
+                      const target = allTargets.find((r) => String(r.vehicle.id) === e.target.value);
                       if (target) moveSelectedOverflowTo(target);
                       e.target.value = '';
                     }}
                   >
                     <option value="" disabled>Choose vehicle…</option>
-                    {plan.routes.map((r) => (
-                      <option key={r.trip_id} value={r.trip_id}>{r.vehicle.name}</option>
+                    {allTargets.map((r) => (
+                      <option key={r.vehicle.id} value={r.vehicle.id}>{r.vehicle.name}</option>
                     ))}
                   </select>
                 </div>
@@ -485,16 +525,20 @@ export default function RoutePlanPage() {
             </section>
           )}
 
-          {plan.routes.map((route) => (
+          {allTargets.map((route) => {
+            const returnMin = clockToMin(plan.openTime || '08:00') + (route.totalDurationMin || 0);
+            const lateByMin = returnMin - clockToMin(plan.backBy || BACK_BY);
+            return (
             <section
               className="card"
-              key={route.trip_id}
+              key={route.trip_id ?? `idle-${route.vehicle.id}`}
               onDragOver={handleDragOverTarget(`route-${route.trip_id}`)}
               onDrop={handleDropOnRouteSection(route)}
               style={dragOverKey === `route-${route.trip_id}` ? { background: '#eef3ff' } : undefined}
             >
               <h3>
-                {route.vehicle.name} — rank {route.vehicle.efficiencyRank} of {vehicles.length} efficiency
+                {route.vehicle.name}{route.vehicle.efficiencyRank != null && ` — rank ${route.vehicle.efficiencyRank} of ${vehicles.length} efficiency`}
+                {route.idle && ' — no stops yet'}
                 {route.vehicle.costPerKm != null && ` (R${route.vehicle.costPerKm.toFixed(2)}/km)`}
                 {!route.fitsWindow && <span className="warn"> — over time budget</span>}
               </h3>
@@ -502,11 +546,23 @@ export default function RoutePlanPage() {
                 {route.stops.length} stops — {route.totalDistanceKm.toFixed(1)} km — {(route.totalDurationMin / 60).toFixed(1)} hrs —
                 {' '}R{route.totalValueRand?.toFixed(0)} payload
                 {route.fuelCost != null && ` — est. fuel R${route.fuelCost.toFixed(2)}`}
+                {!route.idle && ` — back at about ${minToClock(returnMin)}`}
               </p>
-              <button onClick={() => printLoadingSheet(route, date)}>Print loading sheet</button>
-              {' '}
-              <button onClick={() => optimiseRouteOrder(route)} disabled={busy}>Optimise order</button>
+              {!route.idle && lateByMin > 0 && (
+                <p className="warn">
+                  ⚠ Estimated back at {minToClock(returnMin)} — {Math.round(lateByMin)} min after {plan.backBy || BACK_BY}. Consider moving stops off this vehicle.
+                </p>
+              )}
+              {route.idle ? (
+                <p className="hint">No stops on this vehicle. Drag a stop here, or tick stops on another vehicle and choose this one under "move to".</p>
+              ) : (
+                <>
+                  <button onClick={() => printLoadingSheet(route, date)}>Print loading sheet</button>
+                  {' '}
+                  <button onClick={() => optimiseRouteOrder(route)} disabled={busy}>Optimise order</button>
               <p className="hint">Drag a stop to reorder it within this route, or onto another vehicle to move it there — a moved stop goes in where it adds the least distance and the rest of the order stays as it is. "Optimise order" re-sequences the whole route automatically.</p>
+                </>
+              )}
               <ol>
                 {route.stops.map((s, i) => {
                   const key = `${route.trip_id}-${i}`;
@@ -543,27 +599,28 @@ export default function RoutePlanPage() {
                   );
                 })}
               </ol>
-              {plan.routes.length > 1 && (selectedStops[route.trip_id] || []).length > 0 && (
+              {allTargets.length > 1 && (selectedStops[route.trip_id] || []).length > 0 && (
                 <div className="row" style={{ alignItems: 'center', gap: '0.5em' }}>
                   <span className="hint">{selectedStops[route.trip_id].length} selected — move to:</span>
                   <select
                     disabled={busy}
                     defaultValue=""
                     onChange={(e) => {
-                      const target = plan.routes.find((r) => String(r.trip_id) === e.target.value);
+                      const target = allTargets.find((r) => String(r.vehicle.id) === e.target.value);
                       if (target) moveSelectedStopsTo(route, target);
                       e.target.value = '';
                     }}
                   >
                     <option value="" disabled>Choose vehicle…</option>
-                    {plan.routes.filter((r) => r.trip_id !== route.trip_id).map((r) => (
-                      <option key={r.trip_id} value={r.trip_id}>{r.vehicle.name}</option>
+                    {allTargets.filter((r) => r.vehicle.id !== route.vehicle.id).map((r) => (
+                      <option key={r.vehicle.id} value={r.vehicle.id}>{r.vehicle.name}</option>
                     ))}
                   </select>
                 </div>
               )}
             </section>
-          ))}
+            );
+          })}
         </>
       )}
     </div>
