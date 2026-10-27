@@ -10,8 +10,38 @@ const API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 // comfortably finishes in a few seconds either way.
 const BATCH_SIZE = 40;
 
+// Every customer is in Gauteng (Johannesburg area), so geocoding is
+// confined there. Without that, an address with only a suburb name (e.g.
+// "103 Main Road, Newlands") is resolved to the best match ANYWHERE in the
+// world — in practice Cape Town, Perth, Hobart, even France — and the pin
+// is silently wrong. 62 customers were found like that on 2026-10-27.
+// Rough rectangle around Gauteng; same box as client/src/lib/geo.js.
+const GAUTENG_BOUNDS = { minLat: -26.95, maxLat: -25.10, minLng: 27.20, maxLng: 29.00 };
+
+export function isInsideGauteng(lat, lng) {
+  const la = Number(lat);
+  const lo = Number(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) return false;
+  return la >= GAUTENG_BOUNDS.minLat && la <= GAUTENG_BOUNDS.maxLat && lo >= GAUTENG_BOUNDS.minLng && lo <= GAUTENG_BOUNDS.maxLng;
+}
+
+// Bias (not a hard limit) toward greater Johannesburg, so a name that
+// exists in more than one Gauteng city (e.g. Newlands: Johannesburg and
+// Pretoria) prefers the Johannesburg one. SW corner | NE corner.
+const JOHANNESBURG_BIAS = '-26.5,27.6|-25.9,28.5';
+
+// Adds the province when the stored address doesn't have one, so a bare
+// suburb-and-street address still has something to anchor on.
+export function buildGeocodeQuery(address) {
+  const a = String(address || '').trim();
+  if (/gauteng/i.test(a)) return a;
+  return `${a.replace(/,?\s*south africa\s*$/i, '')}, Gauteng, South Africa`;
+}
+
 /**
- * Geocode a single address via Google Geocoding API.
+ * Geocode a single address via Google Geocoding API, restricted to
+ * Gauteng. An address Google can't place inside Gauteng comes back as a
+ * failed geocode (visible on the Customers page) instead of a wrong pin.
  * Only ever called for customers with no cached lat/lng, or whose address
  * changed — keeps API usage to roughly one call per customer, ever.
  */
@@ -19,14 +49,27 @@ async function geocodeAddress(address) {
   if (!API_KEY) {
     throw new Error('GOOGLE_MAPS_API_KEY is not set');
   }
-  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${API_KEY}`;
-  const res = await fetch(url);
+  if (!String(address || '').trim()) {
+    throw new Error('Geocoding failed: the address is empty');
+  }
+  const params = new URLSearchParams({
+    address: buildGeocodeQuery(address),
+    components: 'country:ZA|administrative_area:Gauteng',
+    bounds: JOHANNESBURG_BIAS,
+    region: 'za',
+    key: API_KEY,
+  });
+  const res = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?${params.toString()}`);
   const data = await res.json();
 
   if (data.status !== 'OK' || !data.results?.length) {
-    throw new Error(`Geocoding failed for "${address}": ${data.status}`);
+    throw new Error(`Geocoding failed for "${address}": ${data.status} (searched within Gauteng only)`);
   }
   const { lat, lng } = data.results[0].geometry.location;
+  // Second line of defence in case the restriction above is ever ignored.
+  if (!isInsideGauteng(lat, lng)) {
+    throw new Error(`Geocoding for "${address}" landed outside Gauteng (${lat}, ${lng}) — not saved`);
+  }
   return { lat, lng };
 }
 

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { parse } from 'csv-parse/sync';
 import { query, queryOne, withTransaction } from '../db/index.js';
-import { geocodeMissingCustomers, regeocodeCustomer } from '../services/geocode.js';
+import { geocodeMissingCustomers, regeocodeCustomer, isInsideGauteng } from '../services/geocode.js';
 
 const upload = multer({ storage: multer.memoryStorage() });
 export const customersRouter = Router();
@@ -49,7 +49,9 @@ function getLatLng(row) {
   const lngRaw = getField(row, ['billing longitude', 'longitude', 'lng']);
   const lat = latRaw !== undefined ? Number(latRaw) : NaN;
   const lng = lngRaw !== undefined ? Number(lngRaw) : NaN;
-  if (Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0)) {
+  // Coordinates outside Gauteng are ignored (treated as "none supplied") so
+  // that row gets geocoded properly instead of trusting a wrong pin.
+  if (Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0) && isInsideGauteng(lat, lng)) {
     return { lat, lng };
   }
   return { lat: null, lng: null };

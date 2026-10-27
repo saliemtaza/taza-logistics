@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.4.6';
+export const APP_VERSION = '1.4.7';
 
 export const CHANGELOG = [
+  {
+    version: '1.4.7',
+    date: '2026-10-27',
+    notes: 'Geocoding is now confined to Gauteng (biased to Johannesburg), and the province is added to addresses that lack one. Addresses with only a suburb name used to be matched anywhere in the world — 62 customers had pins in places like France, Perth and Cape Town. An address Google cannot place in Gauteng now shows as a failed geocode instead of a silently wrong pin. Coordinates supplied in a customer CSV that fall outside Gauteng are ignored and the address is geocoded instead.',
+  },
   {
     version: '1.4.6',
     date: '2026-10-27',
