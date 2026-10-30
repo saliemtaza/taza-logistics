@@ -294,6 +294,7 @@ planningRouter.post('/generate', async (req, res) => {
     // time and warn when it is past backBy. Warning only, never a planner limit.
     openTime: settings.open_time || '08:00',
     backBy: '16:30',
+    warehouse, // { lat, lng } — start/end point for the "View route on Maps" links
   });
 });
 

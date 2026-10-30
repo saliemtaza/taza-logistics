@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { isOutsideGauteng, NOT_IN_GAUTENG_LABEL } from '../lib/geo.js';
 
@@ -13,6 +13,47 @@ function clockToMin(hhmm) {
 function minToClock(min) {
   const m = Math.round(min);
   return `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+
+// Google Maps directions links take at most 9 waypoints between the start
+// and the destination, so a long route is split into several links, each
+// starting where the previous one ended. Uses coordinates, not addresses,
+// so Maps goes exactly to the pins the planner used. Built from the route
+// as currently shown, so it always reflects manual moves and reorders.
+const MAPS_WAYPOINTS_PER_LINK = 9;
+
+function mapsLinksForRoute(warehouse, stops) {
+  if (!warehouse || warehouse.lat == null || warehouse.lng == null) return { links: [], skipped: 0 };
+  const located = stops.filter((s) => s.lat != null && s.lng != null);
+  const skipped = stops.length - located.length;
+  const pt = (x) => `${x.lat},${x.lng}`;
+  const links = [];
+  let origin = warehouse;
+  let remaining = located;
+  let doneBefore = 0;
+  while (remaining.length > 0) {
+    const last = remaining.length <= MAPS_WAYPOINTS_PER_LINK; // this link can finish the route
+    // A link that isn't the last ends AT a stop (it can't also take the
+    // warehouse as its destination). When exactly one more stop than a link
+    // can hold remains, take one fewer so the final link isn't left empty.
+    const take = remaining.length === MAPS_WAYPOINTS_PER_LINK + 1 ? MAPS_WAYPOINTS_PER_LINK : MAPS_WAYPOINTS_PER_LINK + 1;
+    const waypointStops = last ? remaining : remaining.slice(0, take - 1);
+    const destination = last ? warehouse : remaining[take - 1];
+    const covered = last ? remaining.length : take;
+    const params = new URLSearchParams({ api: '1', origin: pt(origin), destination: pt(destination), travelmode: 'driving' });
+    if (waypointStops.length > 0) params.set('waypoints', waypointStops.map(pt).join('|'));
+    links.push({
+      url: `https://www.google.com/maps/dir/?${params.toString()}`,
+      from: doneBefore + 1,
+      to: doneBefore + covered,
+      returnsToWarehouse: last,
+    });
+    if (last) break;
+    origin = destination;
+    remaining = remaining.slice(covered);
+    doneBefore += covered;
+  }
+  return { links, skipped };
 }
 
 // Replaces the matching route in a routes array with an updated one, or
@@ -528,6 +569,7 @@ export default function RoutePlanPage() {
           {allTargets.map((route) => {
             const returnMin = clockToMin(plan.openTime || '08:00') + (route.totalDurationMin || 0);
             const lateByMin = returnMin - clockToMin(plan.backBy || BACK_BY);
+            const maps = route.idle ? { links: [], skipped: 0 } : mapsLinksForRoute(plan.warehouse, route.stops);
             return (
             <section
               className="card"
@@ -560,6 +602,19 @@ export default function RoutePlanPage() {
                   <button onClick={() => printLoadingSheet(route, date)}>Print loading sheet</button>
                   {' '}
                   <button onClick={() => optimiseRouteOrder(route)} disabled={busy}>Optimise order</button>
+                  {maps.links.map((link, i) => (
+                    <Fragment key={link.url}>
+                      {' '}
+                      <button onClick={() => window.open(link.url, '_blank', 'noopener,noreferrer')}>
+                        {maps.links.length === 1
+                          ? 'View route on Maps'
+                          : `Maps ${i + 1} of ${maps.links.length} (stops ${link.from}–${link.to}${link.returnsToWarehouse ? ' + back' : ''})`}
+                      </button>
+                    </Fragment>
+                  ))}
+                  {maps.skipped > 0 && (
+                    <p className="warn">⚠ {maps.skipped} stop{maps.skipped === 1 ? '' : 's'} left off the Maps link — no location on file for {maps.skipped === 1 ? 'it' : 'them'}.</p>
+                  )}
               <p className="hint">Drag a stop to reorder it within this route, or onto another vehicle to move it there — a moved stop goes in where it adds the least distance and the rest of the order stays as it is. "Optimise order" re-sequences the whole route automatically.</p>
                 </>
               )}

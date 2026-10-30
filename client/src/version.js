@@ -2,9 +2,19 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.4.9';
+export const APP_VERSION = '1.4.11';
 
 export const CHANGELOG = [
+  {
+    version: '1.4.11',
+    date: '2026-10-30',
+    notes: 'Route Plan: each vehicle now has a "View route on Maps" button that opens its stops in Google Maps as driving directions, starting and ending at the warehouse, in the order currently shown (so it reflects any moves or reordering). Google Maps only accepts 9 stops in between per link, so a longer route gets several buttons ("Maps 1 of 2 (stops 1-10)", "Maps 2 of 2 (stops 11-13 + back)"), each picking up where the last ended. Uses the stored pins, not the address text. A stop with no location on file is left off and flagged.',
+  },
+  {
+    version: '1.4.10',
+    date: '2026-10-27',
+    notes: 'Route sequencing grouping fix: the 1.4.9 tie-break could only try one change at a time, so it could not regroup a route like Malvern/Kensington/Germiston where several stops have to move together. It now searches combinations of moves (same stops in, same order out every time) and still only accepts an order within about half a kilometre (or 1.5%) of the shortest. On the 27 Oct Steed route this keeps the Malvern/Kensington stops together and the Germiston stops together, for 0.6 km extra.',
+  },
   {
     version: '1.4.9',
     date: '2026-10-27',
