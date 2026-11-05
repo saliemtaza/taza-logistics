@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.5.1';
+export const APP_VERSION = '1.5.2';
 
 export const CHANGELOG = [
+  {
+    version: '1.5.2',
+    date: '2026-11-02',
+    notes: 'Loading sheets (single vehicle and the combined sheet) now show each order\'s value and a running total down the load order, with the vehicle\'s total order value on the last line. Cash-collection-only stops show as such and add R0.',
+  },
   {
     version: '1.5.1',
     date: '2026-11-02',

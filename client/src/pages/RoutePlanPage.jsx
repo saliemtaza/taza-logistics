@@ -80,18 +80,39 @@ function todayStr() {
 // off the vehicle when the driver reaches their first stop). Opens a
 // separate, minimal print window so it comes out as a clean physical sheet
 // rather than the whole app UI.
-function printLoadingSheet(route, date) {
-  const loadOrder = [...route.stops].reverse();
-  const win = window.open('', '_blank', 'width=600,height=800');
-  if (!win) { alert('Please allow pop-ups to print the loading sheet.'); return; }
+// One vehicle's loading-sheet table, shared by the single and combined
+// sheets so the two can't drift apart. Rows are in LOAD order (last stop
+// first); each row shows that order's value and the running total loaded so
+// far, so the last row equals the vehicle's total order value. Cash
+// collections carry no value, so they add R0.
+const randFmt = (n) => `R${Math.round(n).toLocaleString('en-ZA')}`;
 
-  const rows = loadOrder.map((s, i) => `
+function loadingSheetTable(route) {
+  const loadOrder = [...route.stops].reverse();
+  let running = 0;
+  const rows = loadOrder.map((s, i) => {
+    const value = Number(s.value_rand) > 0 ? Number(s.value_rand) : 0;
+    running += value;
+    return `
     <tr>
       <td>${i + 1}</td>
       <td>${escapeHtml(s.name)}</td>
       <td>Stop ${route.stops.length - i} of ${route.stops.length}</td>
-    </tr>
-  `).join('');
+      <td class="num">${value > 0 ? randFmt(value) : (s.has_collection ? 'cash collection' : '—')}</td>
+      <td class="num">${randFmt(running)}</td>
+    </tr>`;
+  }).join('');
+  return `
+    <table>
+      <thead><tr><th>Load order</th><th>Customer</th><th>Delivery stop</th><th class="num">Order value</th><th class="num">Running total</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><th colspan="3">Total on ${escapeHtml(route.vehicle.name)} — ${route.stops.length} stop${route.stops.length === 1 ? '' : 's'}</th><th class="num" colspan="2">${randFmt(running)}</th></tr></tfoot>
+    </table>`;
+}
+
+function printLoadingSheet(route, date) {
+  const win = window.open('', '_blank', 'width=600,height=800');
+  if (!win) { alert('Please allow pop-ups to print the loading sheet.'); return; }
 
   win.document.write(`
     <html><head><title>Loading Sheet — ${escapeHtml(route.vehicle.name)} — ${date}</title>
@@ -102,14 +123,13 @@ function printLoadingSheet(route, date) {
       table { width: 100%; border-collapse: collapse; }
       th, td { border: 1px solid #999; padding: 6px 8px; text-align: left; font-size: 0.9rem; }
       th { background: #eee; }
+      .num { text-align: right; white-space: nowrap; }
+      tfoot th { background: #ddd; font-size: 1rem; }
     </style>
     </head><body>
       <h1>Loading Sheet — ${escapeHtml(route.vehicle.name)} — ${date}</h1>
       <p class="note">Load in this order top to bottom: #1 goes in first (deepest in the vehicle), the last row goes in last (nearest the door — first stop's order, so it comes off first).</p>
-      <table>
-        <thead><tr><th>Load order</th><th>Customer</th><th>Delivery stop</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
+      ${loadingSheetTable(route)}
     </body></html>
   `);
   win.document.close();
@@ -126,23 +146,11 @@ function printAllLoadingSheets(routes, date) {
   if (!win) { alert('Please allow pop-ups to print loading sheets.'); return; }
 
   const sections = routes.map((route) => {
-    const loadOrder = [...route.stops].reverse();
-    const rows = loadOrder.map((s, i) => `
-      <tr>
-        <td>${i + 1}</td>
-        <td>${escapeHtml(s.name)}</td>
-        <td>Stop ${route.stops.length - i} of ${route.stops.length}</td>
-      </tr>
-    `).join('');
-
     return `
       <section>
         <h1>Loading Sheet — ${escapeHtml(route.vehicle.name)} — ${date}</h1>
         <p class="note">Load in this order top to bottom: #1 goes in first (deepest in the vehicle), the last row goes in last (nearest the door — first stop's order, so it comes off first).</p>
-        <table>
-          <thead><tr><th>Load order</th><th>Customer</th><th>Delivery stop</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
+        ${loadingSheetTable(route)}
       </section>
     `;
   }).join('');
@@ -156,6 +164,8 @@ function printAllLoadingSheets(routes, date) {
       table { width: 100%; border-collapse: collapse; margin-bottom: 2em; }
       th, td { border: 1px solid #999; padding: 6px 8px; text-align: left; font-size: 0.9rem; }
       th { background: #eee; }
+      .num { text-align: right; white-space: nowrap; }
+      tfoot th { background: #ddd; font-size: 1rem; }
     </style>
     </head><body>${sections}</body></html>
   `);
