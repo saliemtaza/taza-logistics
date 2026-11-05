@@ -2,9 +2,19 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.4.11';
+export const APP_VERSION = '1.5.1';
 
 export const CHANGELOG = [
+  {
+    version: '1.5.1',
+    date: '2026-11-02',
+    notes: 'Route Plan: new "Reverse route" button on each vehicle flips that vehicle\'s stop order (last stop becomes first) without touching the other vehicles — press it again to flip back. Distance, time, fuel cost, the back-by estimate and the Maps links all update to the reversed order. Reordering, Optimise order and Reverse are now refused for a vehicle that has already left the warehouse, because rewriting its stops would have wiped the driver\'s arrived/left punches.',
+  },
+  {
+    version: '1.5.0',
+    date: '2026-11-02',
+    notes: 'New Dashboard tab (printable, refreshes every minute): per vehicle and for the whole fleet over any date range, calculated figures from the route plans (trips, stops, delivery value, km, hours, fuel, maintenance, running cost, cost per km and per stop) beside the actuals from field punches (trips and stops completed, time left-to-back, trips back after 16:30) and fuel fill-ups (odometer km, litres, fuel cost, l/100 km), with the variance between them. Actual columns show a dash until that data exists. Service tracker: set a service interval per vehicle, record each service, and the dashboard counts km since then (odometer when available, otherwise calculated km), warns when a vehicle is within its warning distance and flags it overdue, with an estimate of working days left. New vehicle_services table and two new vehicle columns (run dashboard-migration.sql).',
+  },
   {
     version: '1.4.11',
     date: '2026-10-30',
