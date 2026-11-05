@@ -602,6 +602,14 @@ export default function RoutePlanPage() {
                   <button onClick={() => printLoadingSheet(route, date)}>Print loading sheet</button>
                   {' '}
                   <button onClick={() => optimiseRouteOrder(route)} disabled={busy}>Optimise order</button>
+                  {' '}
+                  <button
+                    onClick={() => reorderWithinRoute(route, route.stops.map((s) => s.customer_id).reverse())}
+                    disabled={busy || route.stops.length < 2}
+                    title="Flip this vehicle's stop order (last stop becomes first). Press again to flip back."
+                  >
+                    Reverse route
+                  </button>
                   {maps.links.map((link, i) => (
                     <Fragment key={link.url}>
                       {' '}

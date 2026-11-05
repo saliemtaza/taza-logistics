@@ -609,6 +609,11 @@ planningRouter.post('/reorder-stops', async (req, res) => {
   const todaysVehicles = allActiveVehicles.filter((v) => !unavailableIds.has(v.id));
   const rankedById = new Map(rankVehiclesByEfficiency(todaysVehicles, fuelPrices).map((v) => [v.id, v]));
 
+  const startedTrip = (await query('SELECT left_warehouse_at FROM trips WHERE id = $1', [tripId]))[0];
+  if (startedTrip?.left_warehouse_at) {
+    return res.status(400).json({ error: 'This vehicle has already left the warehouse \u2014 its route is locked so the driver\'s punches are not lost.' });
+  }
+
   const route = await loadTripWithVehicleAndStops(tripId);
   if (!route) {
     return res.status(404).json({ error: 'That trip could not be found \u2014 the plan may have been regenerated since you loaded this page.' });
@@ -657,6 +662,11 @@ planningRouter.post('/optimise-route', async (req, res) => {
   const allActiveVehicles = await query('SELECT * FROM vehicles WHERE active = true');
   const todaysVehicles = allActiveVehicles.filter((v) => !unavailableIds.has(v.id));
   const rankedById = new Map(rankVehiclesByEfficiency(todaysVehicles, fuelPrices).map((v) => [v.id, v]));
+
+  const startedTrip = (await query('SELECT left_warehouse_at FROM trips WHERE id = $1', [tripId]))[0];
+  if (startedTrip?.left_warehouse_at) {
+    return res.status(400).json({ error: 'This vehicle has already left the warehouse \u2014 its route is locked so the driver\'s punches are not lost.' });
+  }
 
   const route = await loadTripWithVehicleAndStops(tripId);
   if (!route) {
