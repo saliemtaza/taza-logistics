@@ -10,6 +10,7 @@ import CollectionsPage from './pages/CollectionsPage.jsx';
 import VehiclesPage from './pages/VehiclesPage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import HelpPage from './pages/HelpPage.jsx';
+import DashboardPage from './pages/DashboardPage.jsx';
 import { APP_VERSION } from './version.js';
 
 const TABS = {
@@ -19,6 +20,7 @@ const TABS = {
   loading: { label: 'Loading', component: LoadingPage },
   field: { label: 'Field / Punch Clock', component: FieldPage },
   fuel: { label: 'Fuel Log', component: FuelLogPage },
+  dashboard: { label: 'Dashboard', component: DashboardPage },
   customers: { label: 'Customers', component: CustomersPage },
   vehicles: { label: 'Vehicles', component: VehiclesPage },
   archive: { label: 'History / Archive', component: ArchivePage },

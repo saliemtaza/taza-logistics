@@ -14,6 +14,7 @@ import { fuelLogsRouter } from './routes/fuelLogs.js';
 import { archiveRouter } from './routes/archive.js';
 import { staffRouter } from './routes/staff.js';
 import { reportsRouter } from './routes/reports.js';
+import { dashboardRouter } from './routes/dashboard.js';
 
 const app = express();
 app.use(cors());
@@ -31,6 +32,7 @@ app.use('/api/fuel-logs', fuelLogsRouter);
 app.use('/api/archive', archiveRouter);
 app.use('/api/staff', staffRouter);
 app.use('/api/reports', reportsRouter);
+app.use('/api/dashboard', dashboardRouter);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
