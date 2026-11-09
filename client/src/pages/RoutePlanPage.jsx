@@ -237,6 +237,21 @@ export default function RoutePlanPage() {
     await api.post('/api/vehicles/availability', { date, availability });
   }
 
+  // Shows the plan already saved for this date, without re-planning anything.
+  // Unlike the automatic load on opening the page, this reports why it
+  // failed instead of staying silent.
+  async function loadSavedPlan() {
+    setError('');
+    try {
+      const saved = await api.get(`/api/planning/saved/${date}`);
+      if (saved?.exists) { setPlan(saved); return true; }
+      setError('There is no saved plan for this date yet — press Generate.');
+    } catch (err) {
+      setError(`Could not load the saved plan: ${err.message}. If the server was not restarted after the latest update, restart it and try again.`);
+    }
+    return false;
+  }
+
   async function toggleLatePanel() {
     setLateOpen((open) => !open);
     if (!lateCustomers) {
@@ -273,6 +288,7 @@ export default function RoutePlanPage() {
       }
       setLateName('');
       setLateValue('');
+      if (!plan) await loadSavedPlan();
     } catch (err) {
       setLateError(err.message);
     } finally {
@@ -567,6 +583,7 @@ export default function RoutePlanPage() {
       <div className="row">
         <button onClick={() => generate(true)} disabled={busy}>Generate plan (with Google road distances)</button>
         <button onClick={() => generate(false)} disabled={busy}>Generate plan (straight-line only, works offline)</button>
+        {!plan && <button onClick={loadSavedPlan} disabled={busy}>Show saved plan (no re-planning)</button>}
       </div>
 
       {error && <p className="error">{error}</p>}

@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.5.5';
+export const APP_VERSION = '1.5.6';
 
 export const CHANGELOG = [
+  {
+    version: '1.5.6',
+    date: '2026-11-09',
+    notes: 'Route Plan: new "Show saved plan (no re-planning)" button beside Generate, which brings back the existing plan for the date, with its moves and placings, so the loading sheets can be reprinted without regenerating. It also runs automatically after adding a late order when no plan is showing, and it reports the reason if the saved plan cannot be loaded instead of failing silently.',
+  },
   {
     version: '1.5.5',
     date: '2026-11-09',
