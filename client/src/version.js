@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.5.2';
+export const APP_VERSION = '1.5.3';
 
 export const CHANGELOG = [
+  {
+    version: '1.5.3',
+    date: '2026-11-09',
+    notes: 'Route Plan: "Add a late order" for an order that arrives after the plan was generated or the loading sheets printed. Pick the customer and the value and either a vehicle or "best fit" (the vehicle it adds the fewest extra km to, preferring one that stays within its payload, stop and time limits). The stop slots into that route at the cheapest position and nothing else is re-planned; if the customer is already on a vehicle, the value is added to their existing stop. A vehicle that has already left the warehouse is never changed. Late orders are starred on the route and on reprinted loading sheets, and a one-page late-order slip prints for the warehouse showing the vehicle, delivery stop, load position and the vehicle\'s new total.',
+  },
   {
     version: '1.5.2',
     date: '2026-11-02',

@@ -87,7 +87,7 @@ function todayStr() {
 // collections carry no value, so they add R0.
 const randFmt = (n) => `R${Math.round(n).toLocaleString('en-ZA')}`;
 
-function loadingSheetTable(route) {
+function loadingSheetTable(route, lateIds = new Set()) {
   const loadOrder = [...route.stops].reverse();
   let running = 0;
   const rows = loadOrder.map((s, i) => {
@@ -96,7 +96,7 @@ function loadingSheetTable(route) {
     return `
     <tr>
       <td>${i + 1}</td>
-      <td>${escapeHtml(s.name)}</td>
+      <td>${escapeHtml(s.name)}${lateIds.has(s.customer_id) ? ' <strong>&#9733; LATE ORDER</strong>' : ''}</td>
       <td>Stop ${route.stops.length - i} of ${route.stops.length}</td>
       <td class="num">${value > 0 ? randFmt(value) : (s.has_collection ? 'cash collection' : '—')}</td>
       <td class="num">${randFmt(running)}</td>
@@ -110,7 +110,7 @@ function loadingSheetTable(route) {
     </table>`;
 }
 
-function printLoadingSheet(route, date) {
+function printLoadingSheet(route, date, lateIds = new Set()) {
   const win = window.open('', '_blank', 'width=600,height=800');
   if (!win) { alert('Please allow pop-ups to print the loading sheet.'); return; }
 
@@ -129,7 +129,7 @@ function printLoadingSheet(route, date) {
     </head><body>
       <h1>Loading Sheet — ${escapeHtml(route.vehicle.name)} — ${date}</h1>
       <p class="note">Load in this order top to bottom: #1 goes in first (deepest in the vehicle), the last row goes in last (nearest the door — first stop's order, so it comes off first).</p>
-      ${loadingSheetTable(route)}
+      ${loadingSheetTable(route, lateIds)}
     </body></html>
   `);
   win.document.close();
@@ -141,7 +141,7 @@ function printLoadingSheet(route, date) {
 // combined into one document — vehicle sections flow continuously with no
 // forced page break between them, so a short day fits on one printed page
 // (a longer day will still spill to a second page naturally).
-function printAllLoadingSheets(routes, date) {
+function printAllLoadingSheets(routes, date, lateIds = new Set()) {
   const win = window.open('', '_blank', 'width=600,height=800');
   if (!win) { alert('Please allow pop-ups to print loading sheets.'); return; }
 
@@ -150,7 +150,7 @@ function printAllLoadingSheets(routes, date) {
       <section>
         <h1>Loading Sheet — ${escapeHtml(route.vehicle.name)} — ${date}</h1>
         <p class="note">Load in this order top to bottom: #1 goes in first (deepest in the vehicle), the last row goes in last (nearest the door — first stop's order, so it comes off first).</p>
-        ${loadingSheetTable(route)}
+        ${loadingSheetTable(route, lateIds)}
       </section>
     `;
   }).join('');
@@ -178,6 +178,42 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// A one-page slip for the warehouse when an order arrives after loading
+// sheets were printed: which vehicle it goes on, where in the delivery and
+// load order it sits, and what the vehicle now carries in total.
+function printLateOrderSlip(placed, date) {
+  const win = window.open('', '_blank', 'width=520,height=640');
+  if (!win) { alert('Please allow pop-ups to print the late-order slip.'); return; }
+  const loadPosition = placed.total_stops - placed.stop_number + 1;
+  const time = new Date().toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' });
+  win.document.write(`
+    <html><head><title>Late order — ${escapeHtml(placed.name)}</title>
+    <style>
+      body { font-family: sans-serif; padding: 24px; }
+      h1 { font-size: 1.5rem; margin: 0 0 4px; }
+      table { border-collapse: collapse; margin-top: 14px; width: 100%; }
+      td { border: 1px solid #444; padding: 9px 10px; font-size: 1.05rem; }
+      td:first-child { background: #eee; width: 42%; }
+      .note { margin-top: 14px; font-size: 0.95rem; }
+    </style></head><body>
+      <h1>&#9733; LATE ORDER &mdash; add to ${escapeHtml(placed.vehicle_name)}</h1>
+      <div>${escapeHtml(date)} &middot; added ${escapeHtml(time)}</div>
+      <table>
+        <tr><td>Customer</td><td><strong>${escapeHtml(placed.name)}</strong></td></tr>
+        <tr><td>${placed.merged ? 'Extra order value' : 'Order value'}</td><td>${randFmt(placed.value_rand)}</td></tr>
+        <tr><td>Delivery stop</td><td>Stop ${placed.stop_number} of ${placed.total_stops}</td></tr>
+        <tr><td>Load position</td><td>${loadPosition} of ${placed.total_stops} (counting from the first order loaded)</td></tr>
+        <tr><td>Vehicle total now</td><td>${randFmt(placed.vehicle_total_rand)}</td></tr>
+      </table>
+      <p class="note">${placed.merged
+        ? 'This customer was already on this vehicle &mdash; load this on top of their existing order.'
+        : 'Other stops on this vehicle keep their order. If the vehicle is already loaded, check the stop numbers above against the reprinted loading sheet.'}</p>
+    </body></html>`);
+  win.document.close();
+  win.focus();
+  win.print();
+}
+
 export default function RoutePlanPage() {
   const [date, setDate] = useState(todayStr());
   const [plan, setPlan] = useState(null);
@@ -196,6 +232,15 @@ export default function RoutePlanPage() {
   // highlight — it plays no part in deciding what happens on drop.
   const [dragging, setDragging] = useState(null); // { fromTripId: number|null, customerId }
   const [dragOverKey, setDragOverKey] = useState(null);
+  // Late orders: added after the plan was generated, slotted in without re-planning.
+  const [lateOpen, setLateOpen] = useState(false);
+  const [lateCustomers, setLateCustomers] = useState(null); // null until the picker list is fetched
+  const [lateName, setLateName] = useState('');
+  const [lateValue, setLateValue] = useState('');
+  const [lateVehicle, setLateVehicle] = useState('auto');
+  const [lateError, setLateError] = useState('');
+  const [lateAdds, setLateAdds] = useState([]); // this session's late orders: { ...placed, date }
+  const lateIds = new Set(lateAdds.map((a) => a.customer_id));
 
   async function loadVehicleAvailability() {
     const rows = await api.get(`/api/vehicles/availability?date=${date}`);
@@ -208,7 +253,7 @@ export default function RoutePlanPage() {
     const rows = await api.get(`/api/collections?date=${date}`);
     setCollectionsCount(rows.length);
   }
-  useEffect(() => { loadVehicleAvailability(); loadCollectionsCount(); setPlan(null); }, [date]);
+  useEffect(() => { loadVehicleAvailability(); loadCollectionsCount(); setPlan(null); setLateAdds([]); setLateError(''); }, [date]);
 
   function toggleVehicle(id) {
     setUnavailable((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -219,10 +264,46 @@ export default function RoutePlanPage() {
     await api.post('/api/vehicles/availability', { date, availability });
   }
 
+  async function toggleLatePanel() {
+    setLateOpen((open) => !open);
+    if (!lateCustomers) {
+      try { setLateCustomers(await api.get('/api/planning/late-order-customers')); }
+      catch (err) { setLateError(err.message); }
+    }
+  }
+
+  async function addLateOrder() {
+    setLateError('');
+    const matches = (lateCustomers || []).filter((c) => c.name.toLowerCase() === lateName.trim().toLowerCase());
+    if (matches.length === 0) { setLateError('Pick the customer from the list as it appears there.'); return; }
+    if (matches.length > 1) { setLateError('More than one customer has exactly that name — rename one on the Customers page first.'); return; }
+    if (!matches[0].hasLocation) { setLateError(`${matches[0].name} has no map location yet — fix that on the Customers page first.`); return; }
+    const value = Number(lateValue);
+    if (!(value > 0)) { setLateError('Enter the order value in Rand (more than R0).'); return; }
+
+    setBusy(true);
+    try {
+      const result = await api.post('/api/planning/add-late-order', {
+        date, customerId: matches[0].id, valueRand: value,
+        vehicleId: lateVehicle === 'auto' ? undefined : lateVehicle,
+      });
+      setPlan((prev) => (prev ? { ...prev, routes: applyRouteUpdate(prev.routes, result.route) } : prev));
+      setLateAdds((prev) => [...prev, { ...result.placed, date }]);
+      if (result.warning) setMoveWarning(result.warning);
+      setLateName('');
+      setLateValue('');
+    } catch (err) {
+      setLateError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function generate(useRoadRouting) {
     setBusy(true);
     setError('');
     setPlan(null);
+    setLateAdds([]); // a fresh plan already contains every order
     setMoveWarning('');
     try {
       await saveAvailability();
@@ -509,6 +590,48 @@ export default function RoutePlanPage() {
       {error && <p className="error">{error}</p>}
       {plan?.warnings?.length > 0 && plan.warnings.map((w, i) => <p key={i} className="warn">{w}</p>)}
 
+      <section className="card">
+        <button onClick={toggleLatePanel}>{lateOpen ? '− Hide late order' : '+ Add a late order'}</button>
+        {lateOpen && (
+          <>
+            <p className="hint">
+              For an order that arrives after the plan is made. It slots into a vehicle's route where it adds the least distance,
+              and nothing else is re-planned. A vehicle that has already left the warehouse is never changed.
+            </p>
+            <div className="row" style={{ gap: '0.5em', flexWrap: 'wrap', alignItems: 'center' }}>
+              <label>Customer{' '}
+                <input list="late-customers" value={lateName} onChange={(e) => setLateName(e.target.value)} placeholder="start typing a name" style={{ width: '18em' }} />
+              </label>
+              <datalist id="late-customers">
+                {(lateCustomers || []).map((c) => <option key={c.id} value={c.name} />)}
+              </datalist>
+              <label>Order value (R){' '}
+                <input type="number" min="0" value={lateValue} onChange={(e) => setLateValue(e.target.value)} style={{ width: '8em' }} />
+              </label>
+              <label>Vehicle{' '}
+                <select value={lateVehicle} onChange={(e) => setLateVehicle(e.target.value)}>
+                  <option value="auto">Best fit (fewest extra km)</option>
+                  {vehicles.filter((v) => !unavailable[v.id]).map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </select>
+              </label>
+              <button onClick={addLateOrder} disabled={busy || !lateName || !lateValue}>Add order</button>
+            </div>
+            {lateError && <p className="error">{lateError}</p>}
+          </>
+        )}
+        {lateAdds.length > 0 && (
+          <ul className="plain">
+            {lateAdds.map((a, i) => (
+              <li key={`${a.customer_id}-${i}`}>
+                ★ {a.name} — {randFmt(a.value_rand)} {a.merged ? 'added to their existing stop on' : 'placed on'} {a.vehicle_name}
+                {' '}(stop {a.stop_number} of {a.total_stops}, vehicle now {randFmt(a.vehicle_total_rand)}){' '}
+                <button onClick={() => printLateOrderSlip(a, a.date)}>Print late-order slip</button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       {plan && (
         <>
           <p className="hint">Total: {totalKm?.toFixed(1)} km — est. fuel cost R{totalCost?.toFixed(2)}{reversed && ' — stop order reversed'}</p>
@@ -521,7 +644,7 @@ export default function RoutePlanPage() {
           )}
 
           {shownRoutes.length > 1 && (
-            <button onClick={() => printAllLoadingSheets(shownRoutes, date)}>Print all loading sheets</button>
+            <button onClick={() => printAllLoadingSheets(shownRoutes, date, lateIds)}>Print all loading sheets</button>
           )}
 
 
@@ -609,7 +732,7 @@ export default function RoutePlanPage() {
                 <p className="hint">No stops on this vehicle. Drag a stop here, or tick stops on another vehicle and choose this one under "move to".</p>
               ) : (
                 <>
-                  <button onClick={() => printLoadingSheet(route, date)}>Print loading sheet</button>
+                  <button onClick={() => printLoadingSheet(route, date, lateIds)}>Print loading sheet</button>
                   {' '}
                   <button onClick={() => optimiseRouteOrder(route)} disabled={busy}>Optimise order</button>
                   {' '}
@@ -664,6 +787,7 @@ export default function RoutePlanPage() {
                         {isOutsideGauteng(s.lat, s.lng) && <span className="warn"> {NOT_IN_GAUTENG_LABEL}</span>}
                         {' '}({route.legDistancesKm[i]?.toFixed(1)} km leg)
                         {s.value_rand > 0 && <span> · deliver R{s.value_rand}</span>}
+                        {lateIds.has(s.customer_id) && <span className="warn"> · ★ LATE ORDER</span>}
                         {s.collection_amount_rand > 0
                           ? <span> · collect R{s.collection_amount_rand}</span>
                           : (s.has_collection && <span> · cash collection</span>)}
