@@ -217,7 +217,16 @@ export default function RoutePlanPage() {
     const rows = await api.get(`/api/collections?date=${date}`);
     setCollectionsCount(rows.length);
   }
-  useEffect(() => { loadVehicleAvailability(); loadCollectionsCount(); setPlan(null); setLateAdds([]); setLateError(''); setLateNote(''); }, [date]);
+  useEffect(() => {
+    loadVehicleAvailability(); loadCollectionsCount(); setPlan(null); setLateAdds([]); setLateError(''); setLateNote('');
+    // Show the plan already saved for this date (so switching tabs or
+    // refreshing doesn't lose it, and nothing has to be re-generated).
+    let cancelled = false;
+    api.get(`/api/planning/saved/${date}`)
+      .then((saved) => { if (!cancelled && saved?.exists) setPlan((prev) => prev || saved); })
+      .catch(() => {}); // no saved plan shown is the same as before — Generate still works
+    return () => { cancelled = true; };
+  }, [date]);
 
   function toggleVehicle(id) {
     setUnavailable((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -272,6 +281,7 @@ export default function RoutePlanPage() {
   }
 
   async function generate(useRoadRouting) {
+    if (plan && !window.confirm('A plan already exists for this date. Generating again re-plans every vehicle that has not left yet and discards any manual moves and placings. Continue?')) return;
     setBusy(true);
     setError('');
     setPlan(null);

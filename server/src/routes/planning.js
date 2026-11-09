@@ -29,6 +29,80 @@ planningRouter.get('/late-order-customers', async (req, res) => {
   res.json(rows.map((r) => ({ id: r.id, name: r.name, hasLocation: r.lat != null && r.lng != null })));
 });
 
+// Rebuilds the Route Plan screen for a date from what is already SAVED — the
+// trips, their stops in order, the stored leg distances and totals — so the
+// page can show the existing plan again after a tab switch or refresh,
+// instead of forcing a re-generate that would discard manual moves and
+// placings. Same shape as /generate's response. Anything pending and not on
+// a vehicle (e.g. a late order) comes back in `overflow`. A date with no
+// trips has no saved plan: { exists: false }.
+planningRouter.get('/saved/:date', async (req, res) => {
+  const date = req.params.date;
+  const trips = await query('SELECT * FROM trips WHERE trip_date = $1 ORDER BY id', [date]);
+  if (trips.length === 0) return res.json({ exists: false });
+
+  const settings = await loadSettings();
+  const fuelPrices = await loadFuelPrices();
+  const safetyMarginPct = parseFloat(settings.time_safety_margin_pct || '20');
+  const windowMinutes = minutesBetween(settings.open_time || '08:00', settings.close_time || '16:30');
+  const warehouse = settings.warehouse_lat && settings.warehouse_lng
+    ? { lat: parseFloat(settings.warehouse_lat), lng: parseFloat(settings.warehouse_lng) } : null;
+
+  const availabilityOverrides = await query('SELECT vehicle_id, available FROM vehicle_availability WHERE date = $1', [date]);
+  const unavailableIds = new Set(availabilityOverrides.filter((o) => !o.available).map((o) => o.vehicle_id));
+  const allActive = await query('SELECT * FROM vehicles WHERE active = true');
+  const rankedToday = new Map(rankVehiclesByEfficiency(allActive.filter((v) => !unavailableIds.has(v.id)), fuelPrices).map((v) => [v.id, v]));
+  const rankedAll = new Map(rankVehiclesByEfficiency(allActive, fuelPrices).map((v) => [v.id, v]));
+
+  const routes = [];
+  for (const trip of trips) {
+    const vehicle = rankedToday.get(trip.vehicle_id) || rankedAll.get(trip.vehicle_id)
+      || (await query('SELECT * FROM vehicles WHERE id = $1', [trip.vehicle_id]))[0];
+    const stopRows = await query(`
+      SELECT ts.customer_id, ts.leg_distance_km, ts.delivery_value_rand, ts.collection_amount_rand,
+             c.name, c.address, c.lat, c.lng, c.avg_dwell_minutes,
+             EXISTS (SELECT 1 FROM collections cl WHERE cl.trip_stop_id = ts.id) AS has_collection
+      FROM trip_stops ts JOIN customers c ON c.id = ts.customer_id
+      WHERE ts.trip_id = $1 ORDER BY ts.seq
+    `, [trip.id]);
+    const stops = stopRows.map((r) => ({
+      customer_id: r.customer_id, name: r.name, address: r.address, lat: r.lat, lng: r.lng,
+      avg_dwell_minutes: r.avg_dwell_minutes,
+      value_rand: parseFloat(r.delivery_value_rand || 0),
+      collection_amount_rand: parseFloat(r.collection_amount_rand || 0),
+      has_collection: !!r.has_collection,
+    }));
+    const totalDurationMin = parseFloat(trip.planned_duration_min || 0);
+    routes.push({
+      trip_id: trip.id, trip_date: trip.trip_date, vehicle, stops,
+      legDistancesKm: stopRows.map((r) => (r.leg_distance_km != null ? parseFloat(r.leg_distance_km) : null)),
+      totalDistanceKm: parseFloat(trip.planned_distance_km || 0),
+      totalDurationMin,
+      fitsWindow: totalDurationMin * (1 + safetyMarginPct / 100) <= windowMinutes,
+      totalValueRand: stops.reduce((sum, st) => sum + st.value_rand, 0),
+      fuelLitres: trip.planned_fuel_litres != null ? parseFloat(trip.planned_fuel_litres) : null,
+      fuelCost: trip.planned_fuel_cost_rand != null ? parseFloat(trip.planned_fuel_cost_rand) : null,
+      frozen: !!trip.left_warehouse_at,
+    });
+  }
+
+  const waiting = await query(`
+    SELECT customer_id FROM orders WHERE order_date = $1 AND status = 'pending'
+    UNION
+    SELECT customer_id FROM collections WHERE collection_date = $1 AND status = 'pending'
+  `, [date]);
+  const overflow = [];
+  for (const { customer_id } of waiting) {
+    const stop = await loadUnassignedStopForCustomer(date, customer_id);
+    if (stop) overflow.push(stop);
+  }
+
+  res.json({
+    exists: true, date, routes, overflow, warnings: [],
+    openTime: settings.open_time || '08:00', backBy: '16:30', warehouse,
+  });
+});
+
 planningRouter.get('/:date', async (req, res) => {
   const trips = await query('SELECT * FROM trips WHERE trip_date = $1', [req.params.date]);
   const full = await Promise.all(trips.map(async (trip) => ({
