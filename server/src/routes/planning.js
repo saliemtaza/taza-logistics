@@ -695,139 +695,79 @@ planningRouter.post('/optimise-route', async (req, res) => {
   res.json({ route: { ...updatedRoute, trip_id: tripId }, warning });
 });
 
-// Adds an order that arrived AFTER the plan was generated, without
-// re-planning anything. Body: { date, customerId, valueRand, vehicleId? }.
-//  - If the customer already has a stop today on a vehicle that hasn't left,
-//    the value is added to that stop (no re-sequencing).
-//  - Otherwise the stop slots into the chosen vehicle's route at the cheapest
-//    position (vehicleId omitted = whichever vehicle it adds the fewest km to,
-//    preferring one that stays within payload / stop cap / time window).
-// A vehicle that has already left the warehouse is never touched.
+// Adds an order that arrived AFTER the plan was generated. Body:
+// { date, customerId, valueRand }.
+//  - Normally the order is saved as a pending, UNPLACED order and handed back
+//    as a stop, so it lands in the "not placed yet" list where the user
+//    allocates it to a vehicle with the usual move-to / drag. Nothing is
+//    re-planned.
+//  - If the customer already has a stop today, the value is added to that
+//    existing stop instead (there is no allocation decision to make), unless
+//    that vehicle has already left the warehouse, which is refused.
 planningRouter.post('/add-late-order', async (req, res) => {
-  const { date, customerId, valueRand, vehicleId } = req.body || {};
+  const { date, customerId, valueRand } = req.body || {};
   const value = Number(valueRand);
   if (!date || !customerId || !Number.isFinite(value) || value <= 0) {
     return res.status(400).json({ error: 'date, customerId and an order value greater than R0 are required.' });
   }
 
   const customer = (await query(
-    'SELECT id, name, address, lat, lng, avg_dwell_minutes FROM customers WHERE id = $1', [customerId]
+    'SELECT id, name, lat, lng FROM customers WHERE id = $1', [customerId]
   ))[0];
   if (!customer) return res.status(404).json({ error: 'Customer not found.' });
   if (customer.lat == null || customer.lng == null) {
     return res.status(400).json({ error: `${customer.name} has no map location yet — geocode or set their location on the Customers page first.` });
   }
 
-  const settings = await loadSettings();
-  if (!settings.warehouse_lat || !settings.warehouse_lng) {
-    return res.status(400).json({ error: 'Warehouse address is not set/geocoded yet — set it under Settings first.' });
-  }
-  const warehouse = { lat: parseFloat(settings.warehouse_lat), lng: parseFloat(settings.warehouse_lng) };
-  const fuelPrices = await loadFuelPrices();
-  const safetyMarginPct = parseFloat(settings.time_safety_margin_pct || '20');
-  const windowMinutes = minutesBetween(settings.open_time || '08:00', settings.close_time || '16:30');
-
-  const availabilityOverrides = await query('SELECT vehicle_id, available FROM vehicle_availability WHERE date = $1', [date]);
-  const unavailableIds = new Set(availabilityOverrides.filter((o) => !o.available).map((o) => o.vehicle_id));
-  const todaysVehicles = (await query('SELECT * FROM vehicles WHERE active = true')).filter((v) => !unavailableIds.has(v.id));
-  const rankedById = new Map(rankVehiclesByEfficiency(todaysVehicles, fuelPrices).map((v) => [v.id, v]));
-
-  const tripRows = await query('SELECT * FROM trips WHERE trip_date = $1', [date]);
-  const tripByVehicle = new Map(tripRows.map((t) => [String(t.vehicle_id), t]));
-
-  let best;          // { route (before the change), result: { toRoute, warning } }
-  let merged = false;
-
-  // Case 1: the customer is already on a vehicle today — add to that stop.
   const existing = await query(
-    `SELECT ts.trip_id FROM trip_stops ts JOIN trips t ON t.id = ts.trip_id
+    `SELECT ts.trip_id, t.left_warehouse_at FROM trip_stops ts JOIN trips t ON t.id = ts.trip_id
      WHERE t.trip_date = $1 AND ts.customer_id = $2 LIMIT 1`, [date, customerId]
   );
+
+  // Already on a vehicle: add the value to that stop.
   if (existing[0]) {
-    const tripRow = tripRows.find((t) => String(t.id) === String(existing[0].trip_id));
-    if (tripRow?.left_warehouse_at) {
+    if (existing[0].left_warehouse_at) {
       return res.status(409).json({ error: `${customer.name} is already on a vehicle that has left the warehouse — this order can't be added to it.` });
     }
+    const settings = await loadSettings();
+    if (!settings.warehouse_lat || !settings.warehouse_lng) {
+      return res.status(400).json({ error: 'Warehouse address is not set/geocoded yet — set it under Settings first.' });
+    }
+    const warehouse = { lat: parseFloat(settings.warehouse_lat), lng: parseFloat(settings.warehouse_lng) };
+    const fuelPrices = await loadFuelPrices();
+    const safetyMarginPct = parseFloat(settings.time_safety_margin_pct || '20');
+    const windowMinutes = minutesBetween(settings.open_time || '08:00', settings.close_time || '16:30');
+    const availabilityOverrides = await query('SELECT vehicle_id, available FROM vehicle_availability WHERE date = $1', [date]);
+    const unavailableIds = new Set(availabilityOverrides.filter((o) => !o.available).map((o) => o.vehicle_id));
+    const todaysVehicles = (await query('SELECT * FROM vehicles WHERE active = true')).filter((v) => !unavailableIds.has(v.id));
+    const rankedById = new Map(rankVehiclesByEfficiency(todaysVehicles, fuelPrices).map((v) => [v.id, v]));
+
     const route = await loadTripWithVehicleAndStops(existing[0].trip_id);
     route.vehicle = rankedById.get(route.vehicle.id) || route.vehicle;
     const stops = route.stops.map((st) => (st.customer_id === customer.id ? { ...st, value_rand: (st.value_rand || 0) + value } : st));
-    const result = reorderRouteStops({
+    const { route: updatedRoute, warning } = reorderRouteStops({
       warehouse, route: { ...route, stops }, orderedCustomerIds: route.stops.map((st) => st.customer_id),
       fuelPrices, safetyMarginPct, windowMinutes,
     });
-    best = { route, result: { toRoute: result.route, warning: result.warning } };
-    merged = true;
-  } else {
-    // Case 2: a new stop — find where it fits. A customer with an order or
-    // collection already waiting unplaced ("Could not fit today") is sent to
-    // the move-to flow instead, so the two orders aren't linked to one stop
-    // carrying only one of the values.
-    const waiting = await query(
-      `SELECT 1 FROM orders WHERE order_date = $1 AND customer_id = $2 AND status = 'pending'
-       UNION ALL
-       SELECT 1 FROM collections WHERE collection_date = $1 AND customer_id = $2 AND status = 'pending'`,
-      [date, customerId]
-    );
-    if (waiting.length > 0) {
-      return res.status(409).json({ error: `${customer.name} already has an order or collection waiting to be placed (see "Could not fit today") — move that onto a vehicle instead of adding a new one.` });
-    }
-    const stop = {
-      customer_id: customer.id, name: customer.name, address: customer.address,
-      lat: customer.lat, lng: customer.lng, avg_dwell_minutes: customer.avg_dwell_minutes,
-      value_rand: value, collection_amount_rand: 0, has_collection: false,
-    };
-    const candidates = [];
-    for (const v of todaysVehicles) {
-      if (vehicleId && String(v.id) !== String(vehicleId)) continue;
-      const tripRow = tripByVehicle.get(String(v.id)) || null;
-      if (tripRow?.left_warehouse_at) continue; // already out — locked
-      const route = tripRow
-        ? await loadTripWithVehicleAndStops(tripRow.id)
-        : { trip_id: null, trip_date: date, vehicle: v, stops: [] };
-      route.vehicle = rankedById.get(v.id) || v;
-      const result = moveOverflowStop({ warehouse, toRoute: route, stop, fuelPrices, safetyMarginPct, windowMinutes });
-      const baseKm = tripRow ? Number(tripRow.planned_distance_km) || 0 : 0;
-      candidates.push({ route, result, deltaKm: (result.toRoute.totalDistanceKm || 0) - baseKm });
-    }
-    if (candidates.length === 0) {
-      return res.status(400).json({
-        error: vehicleId
-          ? 'That vehicle is not available, or has already left the warehouse.'
-          : 'No vehicle is available to take this order (all have left or are marked unavailable).',
-      });
-    }
-    // Prefer a vehicle that stays within its limits, then the fewest extra km.
-    candidates.sort((a, b) => (Number(!!a.result.warning) - Number(!!b.result.warning)) || (a.deltaKm - b.deltaKm));
-    best = candidates[0];
+    await withTransaction(async (client) => {
+      await client.query(
+        "INSERT INTO orders (order_date, customer_id, value_rand, status) VALUES ($1, $2, $3, 'pending')",
+        [date, customer.id, value]
+      );
+      await rewriteSingleRouteTx(client, route.trip_id, date, updatedRoute);
+    });
+    const idx = updatedRoute.stops.findIndex((st) => st.customer_id === customer.id);
+    return res.json({
+      merged: true, route: updatedRoute, warning: warning || null,
+      placed: { name: customer.name, value_rand: value, vehicle_name: updatedRoute.vehicle.name, stop_number: idx + 1, total_stops: updatedRoute.stops.length },
+    });
   }
 
-  const updatedRoute = best.result.toRoute;
-  await withTransaction(async (client) => {
-    let tripId = best.route.trip_id;
-    if (tripId == null) {
-      const created = await client.query(
-        `INSERT INTO trips (trip_date, vehicle_id, planned_distance_km, planned_duration_min, planned_fuel_litres, planned_fuel_cost_rand, reversed, status)
-         VALUES ($1, $2, 0, 0, NULL, NULL, false, 'planned') RETURNING id`,
-        [date, best.route.vehicle.id]
-      );
-      tripId = created.rows[0].id;
-      updatedRoute.trip_id = tripId;
-    }
-    await client.query(
-      "INSERT INTO orders (order_date, customer_id, value_rand, status) VALUES ($1, $2, $3, 'pending')",
-      [date, customer.id, value]
-    );
-    await rewriteSingleRouteTx(client, tripId, date, updatedRoute);
-  });
-
-  const idx = updatedRoute.stops.findIndex((st) => st.customer_id === customer.id);
-  res.json({
-    route: updatedRoute,
-    warning: best.result.warning || null,
-    placed: {
-      customer_id: customer.id, name: customer.name, value_rand: value, merged,
-      vehicle_name: updatedRoute.vehicle.name, stop_number: idx + 1, total_stops: updatedRoute.stops.length,
-      vehicle_total_rand: updatedRoute.totalValueRand ?? updatedRoute.stops.reduce((sum, st) => sum + (st.value_rand || 0), 0),
-    },
-  });
+  // Not on a vehicle: save it unplaced for the user to allocate.
+  await query(
+    "INSERT INTO orders (order_date, customer_id, value_rand, status) VALUES ($1, $2, $3, 'pending')",
+    [date, customer.id, value]
+  );
+  const stop = await loadUnassignedStopForCustomer(date, customer.id); // sums every pending order/collection for them
+  res.json({ merged: false, unplaced: stop });
 });

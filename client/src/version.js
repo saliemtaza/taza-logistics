@@ -2,9 +2,14 @@
 // tool or package.json. Add a line here whenever we ship something worth
 // a driver or Saliem noticing; APP_VERSION is shown in the header and on
 // the Help tab, CHANGELOG powers the "what's changed" list there.
-export const APP_VERSION = '1.5.3';
+export const APP_VERSION = '1.5.4';
 
 export const CHANGELOG = [
+  {
+    version: '1.5.4',
+    date: '2026-11-09',
+    notes: 'Late orders now go into the "Not placed yet" list (previously "Could not fit today") for you to allocate to a vehicle yourself with move-to or drag, instead of being placed automatically; the late-order slip is gone. Once placed, "Print all loading sheets" (now shown whenever at least one vehicle has a route) reprints every vehicle\'s sheet, with late orders starred. A late order for a customer already on a vehicle still adds to their existing stop.',
+  },
   {
     version: '1.5.3',
     date: '2026-11-09',

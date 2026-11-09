@@ -178,42 +178,6 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// A one-page slip for the warehouse when an order arrives after loading
-// sheets were printed: which vehicle it goes on, where in the delivery and
-// load order it sits, and what the vehicle now carries in total.
-function printLateOrderSlip(placed, date) {
-  const win = window.open('', '_blank', 'width=520,height=640');
-  if (!win) { alert('Please allow pop-ups to print the late-order slip.'); return; }
-  const loadPosition = placed.total_stops - placed.stop_number + 1;
-  const time = new Date().toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' });
-  win.document.write(`
-    <html><head><title>Late order — ${escapeHtml(placed.name)}</title>
-    <style>
-      body { font-family: sans-serif; padding: 24px; }
-      h1 { font-size: 1.5rem; margin: 0 0 4px; }
-      table { border-collapse: collapse; margin-top: 14px; width: 100%; }
-      td { border: 1px solid #444; padding: 9px 10px; font-size: 1.05rem; }
-      td:first-child { background: #eee; width: 42%; }
-      .note { margin-top: 14px; font-size: 0.95rem; }
-    </style></head><body>
-      <h1>&#9733; LATE ORDER &mdash; add to ${escapeHtml(placed.vehicle_name)}</h1>
-      <div>${escapeHtml(date)} &middot; added ${escapeHtml(time)}</div>
-      <table>
-        <tr><td>Customer</td><td><strong>${escapeHtml(placed.name)}</strong></td></tr>
-        <tr><td>${placed.merged ? 'Extra order value' : 'Order value'}</td><td>${randFmt(placed.value_rand)}</td></tr>
-        <tr><td>Delivery stop</td><td>Stop ${placed.stop_number} of ${placed.total_stops}</td></tr>
-        <tr><td>Load position</td><td>${loadPosition} of ${placed.total_stops} (counting from the first order loaded)</td></tr>
-        <tr><td>Vehicle total now</td><td>${randFmt(placed.vehicle_total_rand)}</td></tr>
-      </table>
-      <p class="note">${placed.merged
-        ? 'This customer was already on this vehicle &mdash; load this on top of their existing order.'
-        : 'Other stops on this vehicle keep their order. If the vehicle is already loaded, check the stop numbers above against the reprinted loading sheet.'}</p>
-    </body></html>`);
-  win.document.close();
-  win.focus();
-  win.print();
-}
-
 export default function RoutePlanPage() {
   const [date, setDate] = useState(todayStr());
   const [plan, setPlan] = useState(null);
@@ -237,10 +201,10 @@ export default function RoutePlanPage() {
   const [lateCustomers, setLateCustomers] = useState(null); // null until the picker list is fetched
   const [lateName, setLateName] = useState('');
   const [lateValue, setLateValue] = useState('');
-  const [lateVehicle, setLateVehicle] = useState('auto');
+  const [lateNote, setLateNote] = useState('');
   const [lateError, setLateError] = useState('');
-  const [lateAdds, setLateAdds] = useState([]); // this session's late orders: { ...placed, date }
-  const lateIds = new Set(lateAdds.map((a) => a.customer_id));
+  const [lateAdds, setLateAdds] = useState([]); // customer_ids of late orders added this session (starred in the lists)
+  const lateIds = new Set(lateAdds);
 
   async function loadVehicleAvailability() {
     const rows = await api.get(`/api/vehicles/availability?date=${date}`);
@@ -253,7 +217,7 @@ export default function RoutePlanPage() {
     const rows = await api.get(`/api/collections?date=${date}`);
     setCollectionsCount(rows.length);
   }
-  useEffect(() => { loadVehicleAvailability(); loadCollectionsCount(); setPlan(null); setLateAdds([]); setLateError(''); }, [date]);
+  useEffect(() => { loadVehicleAvailability(); loadCollectionsCount(); setPlan(null); setLateAdds([]); setLateError(''); setLateNote(''); }, [date]);
 
   function toggleVehicle(id) {
     setUnavailable((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -274,6 +238,7 @@ export default function RoutePlanPage() {
 
   async function addLateOrder() {
     setLateError('');
+    setLateNote('');
     const matches = (lateCustomers || []).filter((c) => c.name.toLowerCase() === lateName.trim().toLowerCase());
     if (matches.length === 0) { setLateError('Pick the customer from the list as it appears there.'); return; }
     if (matches.length > 1) { setLateError('More than one customer has exactly that name — rename one on the Customers page first.'); return; }
@@ -283,13 +248,20 @@ export default function RoutePlanPage() {
 
     setBusy(true);
     try {
-      const result = await api.post('/api/planning/add-late-order', {
-        date, customerId: matches[0].id, valueRand: value,
-        vehicleId: lateVehicle === 'auto' ? undefined : lateVehicle,
-      });
-      setPlan((prev) => (prev ? { ...prev, routes: applyRouteUpdate(prev.routes, result.route) } : prev));
-      setLateAdds((prev) => [...prev, { ...result.placed, date }]);
-      if (result.warning) setMoveWarning(result.warning);
+      const result = await api.post('/api/planning/add-late-order', { date, customerId: matches[0].id, valueRand: value });
+      setLateAdds((prev) => [...prev, matches[0].id]);
+      if (result.merged) {
+        setPlan((prev) => (prev ? { ...prev, routes: applyRouteUpdate(prev.routes, result.route) } : prev));
+        if (result.warning) setMoveWarning(result.warning);
+        setLateNote(`${result.placed.name} was already on ${result.placed.vehicle_name} — ${randFmt(result.placed.value_rand)} added to their stop. Reprint the loading sheets.`);
+      } else {
+        setPlan((prev) => (prev
+          ? { ...prev, overflow: [...(prev.overflow || []).filter((o) => o.customer_id !== result.unplaced.customer_id), result.unplaced] }
+          : prev));
+        setLateNote(plan
+          ? `${matches[0].name} added to the "Not placed yet" list below — move it onto a vehicle, then reprint the loading sheets.`
+          : `${matches[0].name} added to today's orders. No plan is loaded on this page, so generating a plan will re-plan every order.`);
+      }
       setLateName('');
       setLateValue('');
     } catch (err) {
@@ -595,8 +567,8 @@ export default function RoutePlanPage() {
         {lateOpen && (
           <>
             <p className="hint">
-              For an order that arrives after the plan is made. It slots into a vehicle's route where it adds the least distance,
-              and nothing else is re-planned. A vehicle that has already left the warehouse is never changed.
+              For an order that arrives after the plan is made. It is added to the "Not placed yet" list, and you move it onto
+              the vehicle you choose. Nothing is re-planned. Then use "Print all loading sheets" to reprint.
             </p>
             <div className="row" style={{ gap: '0.5em', flexWrap: 'wrap', alignItems: 'center' }}>
               <label>Customer{' '}
@@ -608,28 +580,12 @@ export default function RoutePlanPage() {
               <label>Order value (R){' '}
                 <input type="number" min="0" value={lateValue} onChange={(e) => setLateValue(e.target.value)} style={{ width: '8em' }} />
               </label>
-              <label>Vehicle{' '}
-                <select value={lateVehicle} onChange={(e) => setLateVehicle(e.target.value)}>
-                  <option value="auto">Best fit (fewest extra km)</option>
-                  {vehicles.filter((v) => !unavailable[v.id]).map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-                </select>
-              </label>
               <button onClick={addLateOrder} disabled={busy || !lateName || !lateValue}>Add order</button>
             </div>
             {lateError && <p className="error">{lateError}</p>}
           </>
         )}
-        {lateAdds.length > 0 && (
-          <ul className="plain">
-            {lateAdds.map((a, i) => (
-              <li key={`${a.customer_id}-${i}`}>
-                ★ {a.name} — {randFmt(a.value_rand)} {a.merged ? 'added to their existing stop on' : 'placed on'} {a.vehicle_name}
-                {' '}(stop {a.stop_number} of {a.total_stops}, vehicle now {randFmt(a.vehicle_total_rand)}){' '}
-                <button onClick={() => printLateOrderSlip(a, a.date)}>Print late-order slip</button>
-              </li>
-            ))}
-          </ul>
-        )}
+        {lateNote && <p className="message">{lateNote}</p>}
       </section>
 
       {plan && (
@@ -643,14 +599,14 @@ export default function RoutePlanPage() {
             </p>
           )}
 
-          {shownRoutes.length > 1 && (
+          {shownRoutes.length > 0 && (
             <button onClick={() => printAllLoadingSheets(shownRoutes, date, lateIds)}>Print all loading sheets</button>
           )}
 
 
           {plan.overflow.length > 0 && (
             <section className="card error">
-              <h3>Could not fit today ({plan.overflow.length})</h3>
+              <h3>Not placed yet ({plan.overflow.length})</h3>
               <ul>
                 {plan.overflow.map((o) => (
                   <li
@@ -669,6 +625,7 @@ export default function RoutePlanPage() {
                       />
                       <span title="Drag onto a vehicle below to place it">{'\u2630'}</span>
                       {o.name}
+                      {lateIds.has(o.customer_id) && <strong> ★ LATE ORDER</strong>}
                       {isOutsideGauteng(o.lat, o.lng) && <span className="warn"> {NOT_IN_GAUTENG_LABEL}</span>}
                       {o.value_rand > 0 && ` — deliver R${o.value_rand}`}
                       {o.collection_amount_rand > 0 ? ` — collect R${o.collection_amount_rand}` : (o.has_collection && ' — cash collection')}
@@ -676,7 +633,7 @@ export default function RoutePlanPage() {
                   </li>
                 ))}
               </ul>
-              <p className="hint">These didn't fit within the fleet's capacity/time window. Consider a second wave, marking another vehicle available, or adding a vehicle.</p>
+              <p className="hint">These aren't on a vehicle yet — either they didn't fit within the fleet's capacity/time window (consider a second wave, marking another vehicle available, or adding a vehicle), or they're late orders waiting for you to place them.</p>
               {allTargets.length > 0 && selectedOverflow.length > 0 && (
                 <div className="row" style={{ alignItems: 'center', gap: '0.5em' }}>
                   <span className="hint">{selectedOverflow.length} selected — move to:</span>
